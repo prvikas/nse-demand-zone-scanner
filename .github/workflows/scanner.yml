@@ -1,0 +1,47 @@
+name: NSE Daily Scanner
+
+on:
+  schedule:
+    # Runs at 04:00 UTC = 09:30 IST (after NSE previous day data is available)
+    - cron: '0 4 * * 1-5'   # Monday–Friday only
+  workflow_dispatch:          # Allow manual trigger from GitHub UI
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scanner
+        env:
+          DATABASE_URL:       ${{ secrets.DATABASE_URL }}
+          EMAIL_USER:         ${{ secrets.EMAIL_USER }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          EMAIL_TO:           ${{ secrets.EMAIL_TO }}
+          # Optional overrides — uncomment and change to customise
+          # PIVOT_DEPTH:        "3"
+          # IMPULSE_MIN_BARS:   "3"
+          # ATR_EXPANSION_FACTOR: "1.2"
+          # STOP_ATR_BUFFER:    "0.3"
+          # MAX_OPEN_DAYS:      "20"
+        run: python main.py
+
+      - name: Upload run log as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scanner-log-${{ github.run_id }}
+          path: '*.log'
+          retention-days: 30
