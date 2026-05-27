@@ -4,7 +4,6 @@ import sys
 import traceback
 from datetime import date
 
-# Open scanner.log FIRST - before any other imports
 _log_file = open("scanner.log", "w", encoding="utf-8")  # noqa
 
 logging.basicConfig(
@@ -20,6 +19,56 @@ log = logging.getLogger(__name__)
 log.info("scanner.log opened - logging initialised")
 
 
+def _get_swing_narrative(symbol, daily_df, weekly_df):
+    """Return a dict with swing highs/lows dates+prices and nearest zone for email."""
+    from indicators import find_pivot_highs, find_pivot_lows, detect_structure
+    from zones import find_zones
+    from config import STRUCTURE_SWING_COUNT
+
+    daily_structure  = detect_structure(daily_df)
+    weekly_structure = detect_structure(weekly_df)
+
+    if daily_structure not in ("bullish", "bearish"):
+        return None
+
+    # Get last N pivot highs and lows with dates
+    n = STRUCTURE_SWING_COUNT
+    ph_mask = find_pivot_highs(daily_df)
+    pl_mask = find_pivot_lows(daily_df)
+
+    pivot_high_dates = daily_df.index[ph_mask].tolist()[-n:]
+    pivot_low_dates  = daily_df.index[pl_mask].tolist()[-n:]
+
+    pivot_highs = [(str(d.date()), round(float(daily_df.loc[d, "High"]), 2)) for d in pivot_high_dates]
+    pivot_lows  = [(str(d.date()), round(float(daily_df.loc[d, "Low"]),  2)) for d in pivot_low_dates]
+
+    current_price = round(float(daily_df["Close"].iloc[-1]), 2)
+
+    # Nearest zone
+    side = "long" if daily_structure == "bullish" else "short"
+    zones = find_zones(daily_df, side)
+    nearest_zone = None
+    if zones and daily_structure == "bullish":
+        below = [z for z in zones if z.zone_high < current_price]
+        if below:
+            nearest_zone = max(below, key=lambda z: z.zone_high)
+    elif zones and daily_structure == "bearish":
+        above = [z for z in zones if z.zone_low > current_price]
+        if above:
+            nearest_zone = min(above, key=lambda z: z.zone_low)
+
+    return dict(
+        symbol=symbol,
+        daily_structure=daily_structure,
+        weekly_structure=weekly_structure,
+        current_price=current_price,
+        pivot_highs=pivot_highs,    # [(date_str, price), ...]
+        pivot_lows=pivot_lows,
+        zone_low=round(nearest_zone.zone_low, 2) if nearest_zone else None,
+        zone_high=round(nearest_zone.zone_high, 2) if nearest_zone else None,
+    )
+
+
 def run():
     log.info("Importing project modules...")
     try:
@@ -29,8 +78,6 @@ def run():
         from strategy import scan_symbol
         from lifecycle import update_open_signals
         from notifier import send_daily_report
-        from indicators import detect_structure
-        from zones import find_zones
         log.info("All modules imported OK")
     except RuntimeError as exc:
         log.error("Configuration error: %s", exc)
@@ -58,16 +105,14 @@ def run():
     log.info("Price data fetched for %d / %d symbols", len(price_data), len(symbols))
 
     if not price_data:
-        log.warning("No price data fetched - yfinance may be rate-limited or NSE is down.")
+        log.warning("No price data fetched - yfinance may be rate-limited.")
         sys.exit(1)
 
     update_open_signals(price_data)
 
-    new_signal_ids = []
-    scanned = 0
-
-    # Structure summary: collect top bullish/bearish stocks for email
-    structure_summary = []   # list of dicts
+    new_signal_ids  = []
+    scanned         = 0
+    structure_data  = []   # for email narrative
 
     for symbol, daily_df in price_data.items():
         scanned += 1
@@ -77,34 +122,10 @@ def run():
                  "Close": "last", "Volume": "sum"}
             ).dropna()
 
-            daily_structure  = detect_structure(daily_df)
-            weekly_structure = detect_structure(weekly_df)
-
-            # Collect structure data for email summary (top 20 per side)
-            if daily_structure in ("bullish", "bearish"):
-                demand_zones = find_zones(daily_df, "long") if daily_structure == "bullish" else []
-                supply_zones = find_zones(daily_df, "short") if daily_structure == "bearish" else []
-                nearest_zone = None
-                current_price = round(float(daily_df["Close"].iloc[-1]), 2)
-
-                if demand_zones:
-                    # nearest demand zone below current price
-                    below = [z for z in demand_zones if z.zone_high < current_price]
-                    if below:
-                        nearest_zone = max(below, key=lambda z: z.zone_high)
-                elif supply_zones:
-                    above = [z for z in supply_zones if z.zone_low > current_price]
-                    if above:
-                        nearest_zone = min(above, key=lambda z: z.zone_low)
-
-                structure_summary.append(dict(
-                    symbol=symbol,
-                    daily_structure=daily_structure,
-                    weekly_structure=weekly_structure,
-                    current_price=current_price,
-                    zone_low=round(nearest_zone.zone_low, 2) if nearest_zone else None,
-                    zone_high=round(nearest_zone.zone_high, 2) if nearest_zone else None,
-                ))
+            # Collect swing narrative for email
+            narrative = _get_swing_narrative(symbol, daily_df, weekly_df)
+            if narrative:
+                structure_data.append(narrative)
 
             signals = scan_symbol(symbol, daily_df, weekly_df, today)
         except Exception as exc:
@@ -130,13 +151,14 @@ def run():
                 log.warning("DB insert failed for %s: %s", symbol, exc)
 
     log.info("Scanned %d symbols | New signals inserted: %d", scanned, len(new_signal_ids))
-    log.info("Structure summary: %d stocks with clear structure", len(structure_summary))
+    log.info("Structure narratives collected: %d", len(structure_data))
 
     try:
-        new_signals = repo.get_new_signals_today(today)
+        new_signals      = repo.get_new_signals_today(today)
         resolved_signals = repo.get_today_resolved_signals(today)
-        log.info("Email report: %d new signals, %d resolved", len(new_signals), len(resolved_signals))
-        send_daily_report(new_signals, resolved_signals, today, structure_summary)
+        log.info("Email: %d new, %d resolved, %d structure",
+                 len(new_signals), len(resolved_signals), len(structure_data))
+        send_daily_report(new_signals, resolved_signals, today, structure_data)
         log.info("Email report sent")
     except Exception as exc:
         log.error("Email failed: %s", exc)
