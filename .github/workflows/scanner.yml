@@ -2,7 +2,9 @@ name: NSE Daily Scanner
 
 on:
   schedule:
-    - cron: '0 4 * * 1-5'
+    - cron: '45 0 * * *'   # 6:45 PM CST (today test)
+    - cron: '0 1 * * *'    # 7:00 PM CST (today test)
+    - cron: '0 23 * * 1-5' # 5:00 PM CST Mon-Fri (permanent)
   workflow_dispatch:
 
 env:
