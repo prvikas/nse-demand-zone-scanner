@@ -20,10 +20,10 @@ log.info("scanner.log opened - logging initialised")
 
 
 def _get_swing_narrative(symbol, daily_df, weekly_df):
-    """Return a dict with swing highs/lows dates+prices and nearest zone for email."""
-    from indicators import find_pivot_highs, find_pivot_lows, detect_structure
-    from zones import find_zones
-    from config import STRUCTURE_SWING_COUNT
+    """Return swing structure + projected trade levels for email."""
+    from indicators import find_pivot_highs, find_pivot_lows, detect_structure, compute_atr
+    from zones import find_zones, find_nearest_opposite_zone
+    from config import STRUCTURE_SWING_COUNT, STOP_ATR_BUFFER
 
     daily_structure  = detect_structure(daily_df)
     weekly_structure = detect_structure(weekly_df)
@@ -31,7 +31,6 @@ def _get_swing_narrative(symbol, daily_df, weekly_df):
     if daily_structure not in ("bullish", "bearish"):
         return None
 
-    # Get last N pivot highs and lows with dates
     n = STRUCTURE_SWING_COUNT
     ph_mask = find_pivot_highs(daily_df)
     pl_mask = find_pivot_lows(daily_df)
@@ -43,11 +42,15 @@ def _get_swing_narrative(symbol, daily_df, weekly_df):
     pivot_lows  = [(str(d.date()), round(float(daily_df.loc[d, "Low"]),  2)) for d in pivot_low_dates]
 
     current_price = round(float(daily_df["Close"].iloc[-1]), 2)
+    atr           = compute_atr(daily_df)
+    current_atr   = round(float(atr.iloc[-1]), 2)
 
-    # Nearest zone
-    side = "long" if daily_structure == "bullish" else "short"
+    side  = "long" if daily_structure == "bullish" else "short"
     zones = find_zones(daily_df, side)
-    nearest_zone = None
+
+    nearest_zone   = None
+    entry = stop = target = rr = None
+
     if zones and daily_structure == "bullish":
         below = [z for z in zones if z.zone_high < current_price]
         if below:
@@ -57,15 +60,39 @@ def _get_swing_narrative(symbol, daily_df, weekly_df):
         if above:
             nearest_zone = min(above, key=lambda z: z.zone_low)
 
+    if nearest_zone:
+        if daily_structure == "bullish":
+            entry  = round(nearest_zone.zone_high, 2)          # enter at top of demand zone
+            stop   = round(nearest_zone.zone_low - STOP_ATR_BUFFER * current_atr, 2)
+            raw_target = find_nearest_opposite_zone(daily_df, entry, "long")
+            if raw_target is None:
+                raw_target = round(entry + abs(entry - stop) * 2, 2)
+            target = round(raw_target, 2)
+        else:
+            entry  = round(nearest_zone.zone_low, 2)           # enter at bottom of supply zone
+            stop   = round(nearest_zone.zone_high + STOP_ATR_BUFFER * current_atr, 2)
+            raw_target = find_nearest_opposite_zone(daily_df, entry, "short")
+            if raw_target is None:
+                raw_target = round(entry - abs(entry - stop) * 2, 2)
+            target = round(raw_target, 2)
+
+        risk   = abs(entry - stop)
+        reward = abs(target - entry)
+        rr     = round(reward / risk, 1) if risk > 0 else None
+
     return dict(
         symbol=symbol,
         daily_structure=daily_structure,
         weekly_structure=weekly_structure,
         current_price=current_price,
-        pivot_highs=pivot_highs,    # [(date_str, price), ...]
+        pivot_highs=pivot_highs,
         pivot_lows=pivot_lows,
-        zone_low=round(nearest_zone.zone_low, 2) if nearest_zone else None,
+        zone_low=round(nearest_zone.zone_low,  2) if nearest_zone else None,
         zone_high=round(nearest_zone.zone_high, 2) if nearest_zone else None,
+        entry=entry,
+        stop=stop,
+        target=target,
+        rr=rr,
     )
 
 
@@ -110,9 +137,9 @@ def run():
 
     update_open_signals(price_data)
 
-    new_signal_ids  = []
-    scanned         = 0
-    structure_data  = []   # for email narrative
+    new_signal_ids = []
+    scanned        = 0
+    structure_data = []
 
     for symbol, daily_df in price_data.items():
         scanned += 1
@@ -122,7 +149,6 @@ def run():
                  "Close": "last", "Volume": "sum"}
             ).dropna()
 
-            # Collect swing narrative for email
             narrative = _get_swing_narrative(symbol, daily_df, weekly_df)
             if narrative:
                 structure_data.append(narrative)
@@ -159,9 +185,9 @@ def run():
         log.info("Email: %d new, %d resolved, %d structure",
                  len(new_signals), len(resolved_signals), len(structure_data))
         send_daily_report(new_signals, resolved_signals, today, structure_data)
-        log.info("Email report sent")
+        log.info("Issue report created")
     except Exception as exc:
-        log.error("Email failed: %s", exc)
+        log.error("Report failed: %s", exc)
         log.error(traceback.format_exc())
         sys.exit(1)
 

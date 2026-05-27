@@ -1,9 +1,9 @@
-"""GitHub Issues reporter — replaces Gmail SMTP.
+"""GitHub Issues reporter.
 
 Strategy:
 - Label all scanner issues with 'nse-scanner-report'
-- On each run: delete issues older than 7 days, create today's issue
-- Uses GITHUB_TOKEN (already available in Actions, zero extra secrets)
+- On each run: archive issues older than 7 days, close previous open, create today's
+- Uses GITHUB_TOKEN (zero extra secrets)
 """
 import logging
 import os
@@ -15,12 +15,12 @@ from typing import List
 
 log = logging.getLogger(__name__)
 
-REPO            = os.environ.get("GITHUB_REPOSITORY", "")   # e.g. prvikas/nse-demand-zone-scanner
-GITHUB_TOKEN    = os.environ.get("GITHUB_TOKEN", "")
-API_BASE        = "https://api.github.com"
-LABEL_NAME      = "nse-scanner-report"
-KEEP_DAYS       = 7
-MAX_PER_SIDE    = 20
+REPO         = os.environ.get("GITHUB_REPOSITORY", "")
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+API_BASE     = "https://api.github.com"
+LABEL_NAME   = "nse-scanner-report"
+KEEP_DAYS    = 7
+MAX_PER_SIDE = 20
 
 
 def _gh_request(method: str, path: str, body: dict = None):
@@ -38,26 +38,22 @@ def _gh_request(method: str, path: str, body: dict = None):
         with urllib.request.urlopen(req) as resp:
             return json.loads(resp.read()) if resp.status not in (204,) else {}
     except urllib.error.HTTPError as e:
-        log.warning("GitHub API %s %s → %s: %s", method, path, e.code, e.read())
+        log.warning("GitHub API %s %s -> %s: %s", method, path, e.code, e.read())
         return None
 
 
 def _ensure_label():
-    """Create the label if it doesn't exist yet."""
     result = _gh_request("GET", f"/repos/{REPO}/labels/{LABEL_NAME}")
     if result is None:
         _gh_request("POST", f"/repos/{REPO}/labels", {
-            "name": LABEL_NAME,
-            "color": "0075ca",
+            "name": LABEL_NAME, "color": "0075ca",
             "description": "Daily NSE scanner report",
         })
         log.info("Created label '%s'", LABEL_NAME)
 
 
 def _get_scanner_issues():
-    """Return all open+closed issues with the scanner label."""
-    issues = []
-    page   = 1
+    issues, page = [], 1
     while True:
         batch = _gh_request(
             "GET",
@@ -72,40 +68,26 @@ def _get_scanner_issues():
     return issues
 
 
-def _delete_old_issues():
-    """Delete issues older than KEEP_DAYS. Close first (API requires closed before delete)."""
+def _archive_old_issues():
     cutoff = datetime.now(timezone.utc) - timedelta(days=KEEP_DAYS)
-    issues = _get_scanner_issues()
-    deleted = 0
-    for issue in issues:
+    for issue in _get_scanner_issues():
         created_at = datetime.fromisoformat(issue["created_at"].replace("Z", "+00:00"))
         if created_at < cutoff:
-            number = issue["number"]
-            # Close first if still open
-            if issue["state"] == "open":
-                _gh_request("PATCH", f"/repos/{REPO}/issues/{number}", {"state": "closed"})
-            # Delete via GraphQL (REST API doesn't support issue delete without admin token;
-            # we'll just close old ones — deletion needs a Personal Access Token with delete scope)
-            # So we close + add a 'archived' label as the best we can do with GITHUB_TOKEN
-            _gh_request("PATCH", f"/repos/{REPO}/issues/{number}", {
+            n = issue["number"]
+            _gh_request("PATCH", f"/repos/{REPO}/issues/{n}", {
                 "state": "closed",
                 "title": f"[ARCHIVED] {issue['title']}",
             })
-            deleted += 1
-            log.info("Archived old issue #%d", number)
-    if deleted:
-        log.info("Archived %d old scanner issue(s)", deleted)
+            log.info("Archived issue #%d", n)
 
 
 def _close_previous_open_issues():
-    """Close any open scanner issues from previous days."""
     today_str = str(date.today())
-    issues    = _get_scanner_issues()
-    for issue in issues:
+    for issue in _get_scanner_issues():
         if issue["state"] == "open" and today_str not in issue["title"]:
             _gh_request("PATCH", f"/repos/{REPO}/issues/{issue['number']}",
                         {"state": "closed"})
-            log.info("Closed previous issue #%d: %s", issue["number"], issue["title"])
+            log.info("Closed previous issue #%d", issue["number"])
 
 
 def send_daily_report(
@@ -115,66 +97,85 @@ def send_daily_report(
     structure_data: List[dict] = None,
 ):
     if not GITHUB_TOKEN or not REPO:
-        log.error("GITHUB_TOKEN or GITHUB_REPOSITORY not set — cannot create issue")
+        log.error("GITHUB_TOKEN or GITHUB_REPOSITORY not set")
         return
 
     _ensure_label()
-    _delete_old_issues()
+    _archive_old_issues()
     _close_previous_open_issues()
 
     title = f"NSE Scanner — {scan_date} | {len(new_signals)} new setup(s)"
     body  = _build_body(new_signals, resolved_signals, scan_date, structure_data or [])
 
     issue = _gh_request("POST", f"/repos/{REPO}/issues", {
-        "title": title,
-        "body":  body,
-        "labels": [LABEL_NAME],
+        "title": title, "body": body, "labels": [LABEL_NAME],
     })
-
     if issue:
         log.info("Issue created: #%d — %s", issue["number"], issue["html_url"])
     else:
         log.error("Failed to create GitHub issue")
 
 
-# ───────────────────────────────────────────────────────────────────────────
 def _swing_paragraph(s: dict) -> str:
     sym    = s["symbol"].replace(".NS", "")
     cmp    = s["current_price"]
     highs  = s["pivot_highs"]
     lows   = s["pivot_lows"]
     zl, zh = s.get("zone_low"), s.get("zone_high")
+    entry  = s.get("entry")
+    stop   = s.get("stop")
+    target = s.get("target")
+    rr     = s.get("rr")
     weekly = s["weekly_structure"]
 
+    # Trade levels line
+    if entry and stop and target:
+        levels_line = (
+            f"- **Entry:** {entry} &nbsp;|&nbsp; "
+            f"**Stop:** {stop} &nbsp;|&nbsp; "
+            f"**Target:** {target} &nbsp;|&nbsp; "
+            f"**R:R** {rr}R\n"
+        )
+    else:
+        levels_line = "- _No zone close enough to price for level calculation_\n"
+
+    # Zone line
+    zone_line = (
+        f"- Zone: **{zl} – {zh}**\n" if zl
+        else "- Zone: _none identified_\n"
+    )
+
     if s["daily_structure"] == "bullish":
-        hh_parts  = " → ".join(f"**{p}** on {d}" for d, p in highs)
-        hl_parts  = " → ".join(f"**{p}** on {d}" for d, p in lows)
-        zone_str  = f"Nearest demand zone: **{zl} – {zh}**" if zl else "No demand zone below price"
+        hh = " → ".join(f"**{p}** ({d})" for d, p in highs)
+        hl = " → ".join(f"**{p}** ({d})" for d, p in lows)
         weekly_note = (
             "Weekly also bullish — high conviction 🟢" if weekly == "bullish" else
             "Weekly neutral — daily leading ⚪" if weekly == "neutral" else
             "Weekly bearish — counter-trend caution 🔴"
         )
         return (
-            f"**{sym}** (CMP: {cmp}) `BULLISH`\n"
-            f"- Higher Highs: {hh_parts}\n"
-            f"- Higher Lows:  {hl_parts}\n"
-            f"- {zone_str} | {weekly_note}\n\n"
+            f"**{sym}** &nbsp;`CMP {cmp}` &nbsp;`BULLISH`\n"
+            f"- HH: {hh}\n"
+            f"- HL: {hl}\n"
+            + zone_line
+            + levels_line
+            + f"- {weekly_note}\n\n"
         )
     else:
-        lh_parts  = " → ".join(f"**{p}** on {d}" for d, p in highs)
-        ll_parts  = " → ".join(f"**{p}** on {d}" for d, p in lows)
-        zone_str  = f"Nearest supply zone: **{zl} – {zh}**" if zl else "No supply zone above price"
+        lh = " → ".join(f"**{p}** ({d})" for d, p in highs)
+        ll = " → ".join(f"**{p}** ({d})" for d, p in lows)
         weekly_note = (
             "Weekly also bearish — high conviction 🔴" if weekly == "bearish" else
             "Weekly neutral — daily leading ⚪" if weekly == "neutral" else
             "Weekly bullish — counter-trend caution 🟢"
         )
         return (
-            f"**{sym}** (CMP: {cmp}) `BEARISH`\n"
-            f"- Lower Highs: {lh_parts}\n"
-            f"- Lower Lows:  {ll_parts}\n"
-            f"- {zone_str} | {weekly_note}\n\n"
+            f"**{sym}** &nbsp;`CMP {cmp}` &nbsp;`BEARISH`\n"
+            f"- LH: {lh}\n"
+            f"- LL: {ll}\n"
+            + zone_line
+            + levels_line
+            + f"- {weekly_note}\n\n"
         )
 
 
@@ -185,7 +186,7 @@ def _build_body(
     structure_data: List[dict],
 ) -> str:
 
-    # ── New signals ─────────────────────────────────────────
+    # -- New signals ----------------------------------------------------------
     if new_signals:
         rows = "| Symbol | Side | Confirm Date | Entry | Stop | Target | R:R | Zone | Retest# | Score |\n"
         rows += "|---|---|---|---|---|---|---|---|---|---|\n"
@@ -211,7 +212,7 @@ def _build_body(
     else:
         new_section = "## 🆕 New Confirmed Setups\n\n_No new confirmed setups today._\n\n"
 
-    # ── Resolved ─────────────────────────────────────────
+    # -- Resolved -------------------------------------------------------------
     if resolved_signals:
         rows = "| Symbol | Side | Rec. On | Resolved On | Status | Reason |\n"
         rows += "|---|---|---|---|---|---|\n"
@@ -233,12 +234,16 @@ def _build_body(
     else:
         resolved_section = "## 📋 Updates on Open Setups\n\n_No updates on open setups today._\n\n"
 
-    # ── Structure narrative ───────────────────────────────────
+    # -- Structure narrative --------------------------------------------------
     bullish = [s for s in structure_data if s["daily_structure"] == "bullish"][:MAX_PER_SIDE]
     bearish = [s for s in structure_data if s["daily_structure"] == "bearish"][:MAX_PER_SIDE]
 
     struct_section = "## 📊 Market Structure Review — for backtesting\n\n"
-    struct_section += f"> Showing up to {MAX_PER_SIDE} stocks per side. Verify on charts before acting.\n\n"
+    struct_section += (
+        f"> Up to {MAX_PER_SIDE} stocks per side. "
+        "**Entry** = projected zone entry | **Stop** = below/above zone + ATR buffer | "
+        "**Target** = nearest opposite zone or 2R. Verify on charts before acting.\n\n"
+    )
 
     if bullish:
         struct_section += f"### ▲ Bullish — HH + HL ({len(bullish)} stocks)\n\n"
@@ -253,8 +258,7 @@ def _build_body(
 
     footer = (
         "---\n"
-        "_Automated scan across Nifty 500. Not financial advice. "
-        "Verify on charts before trading._"
+        "_Automated scan — Nifty 500. Not financial advice. Verify on charts before trading._"
     )
 
     return (
