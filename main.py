@@ -4,10 +4,7 @@ import sys
 import traceback
 from datetime import date
 
-# -------------------------------------------------------------------
 # Open scanner.log FIRST - before any other imports
-# This ensures even config/import crashes are captured in the file
-# -------------------------------------------------------------------
 _log_file = open("scanner.log", "w", encoding="utf-8")  # noqa
 
 logging.basicConfig(
@@ -34,7 +31,7 @@ def run():
         from notifier import send_daily_report
         log.info("All modules imported OK")
     except RuntimeError as exc:
-        log.error("Configuration error:\n%s", exc)
+        log.error("Configuration error: %s", exc)
         sys.exit(1)
     except Exception as exc:
         log.error("Import failed: %s", exc)
@@ -44,7 +41,6 @@ def run():
     today = date.today()
     log.info("=== NSE Scanner starting - %s ===", today)
 
-    # DB schema
     try:
         repo.init_schema()
         log.info("DB schema ready")
@@ -53,11 +49,9 @@ def run():
         log.error(traceback.format_exc())
         sys.exit(1)
 
-    # Universe
     symbols = get_nifty500_symbols()
     log.info("%d symbols in universe", len(symbols))
 
-    # Price data
     price_data = fetch_all(symbols)
     log.info("Price data fetched for %d / %d symbols", len(price_data), len(symbols))
 
@@ -65,12 +59,13 @@ def run():
         log.warning("No price data fetched - yfinance may be rate-limited or NSE is down.")
         sys.exit(1)
 
-    # Lifecycle: update open signals
     update_open_signals(price_data)
 
     # Scan for new signals
     new_signal_ids = []
+    scanned = 0
     for symbol, daily_df in price_data.items():
+        scanned += 1
         try:
             weekly_df = daily_df.resample("W-FRI").agg(
                 {"Open": "first", "High": "max", "Low": "min",
@@ -85,6 +80,7 @@ def run():
             if repo.signal_already_exists(
                 sig.symbol, sig.side, sig.zone_low, sig.zone_high
             ):
+                log.debug("%s: duplicate signal skipped", symbol)
                 continue
             try:
                 sid = repo.insert_signal(sig)
@@ -98,12 +94,12 @@ def run():
             except Exception as exc:
                 log.warning("DB insert failed for %s: %s", symbol, exc)
 
-    log.info("New signals inserted: %d", len(new_signal_ids))
+    log.info("Scanned %d symbols | New signals inserted: %d", scanned, len(new_signal_ids))
 
-    # Email report
     try:
         new_signals = repo.get_new_signals_today(today)
         resolved_signals = repo.get_today_resolved_signals(today)
+        log.info("Email report: %d new signals, %d resolved", len(new_signals), len(resolved_signals))
         send_daily_report(new_signals, resolved_signals, today)
         log.info("Email report sent")
     except Exception as exc:

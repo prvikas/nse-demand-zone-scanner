@@ -1,4 +1,14 @@
-"""Core strategy: combine multi-timeframe structure, impulse, zone, retest, confirmation."""
+"""Core strategy: supply/demand zone scanner with ATR impulse filter.
+
+Key rules:
+- Weekly trend sets the bias (bullish/bearish/neutral)
+- Daily trend must agree OR be neutral (daily leads are allowed)
+- Impulse: >= IMPULSE_MIN_BARS consecutive directional bars with ATR expansion
+- Zone: body of first impulse bar
+- Retest: first touch of zone after impulse
+- Confirmation: candle after retest closes beyond prior bar's high/low
+- Signal window: confirmation within last CONFIRMATION_WINDOW bars (default 3)
+"""
 import logging
 from dataclasses import dataclass
 from typing import List, Optional
@@ -10,11 +20,14 @@ from zones import find_zones, find_nearest_opposite_zone
 
 log = logging.getLogger(__name__)
 
+# How many bars back a confirmation is still considered "fresh" / actionable
+CONFIRMATION_WINDOW = 3  # signal is valid if confirmation happened within last 3 bars
+
 
 @dataclass
 class Signal:
     symbol: str
-    side: str                    # 'long' or 'short'
+    side: str
     scan_date: str
     confirmation_date: str
     entry_price: float
@@ -26,10 +39,11 @@ class Signal:
     daily_structure: str
     atr_before: float
     atr_end: float
-    atr_expansion: float         # atr_end / atr_before
+    atr_expansion: float
     confirmation_close: float
-    confirmation_prev_high: float  # for audit
+    confirmation_prev_high: float
     quality_score: float
+    bars_since_confirmation: int = 0
 
 
 def scan_symbol(
@@ -40,22 +54,25 @@ def scan_symbol(
     """Run the full strategy pipeline on one symbol. Returns confirmed signals."""
     signals: List[Signal] = []
 
-    # ── Step 1: Weekly + daily structure ─────────────────────────────────────
     weekly_structure = detect_structure(weekly)
     daily_structure = detect_structure(daily)
 
     for side in ["long", "short"]:
-        required_structure = "bullish" if side == "long" else "bearish"
-        if weekly_structure != required_structure:
+        required = "bullish" if side == "long" else "bearish"
+
+        # Weekly must agree OR daily must lead (weekly neutral is OK)
+        if weekly_structure != required and weekly_structure != "neutral":
             continue
-        if daily_structure != required_structure:
+        # Daily must agree
+        if daily_structure != required:
             continue
 
-        # ── Step 2: Find impulse zones ────────────────────────────────────────
         zones = find_zones(daily, side)
+        if not zones:
+            log.debug("%s [%s]: no impulse zones found", symbol, side)
+            continue
 
         for zone in zones:
-            # Only first retest: ensure price returned to zone exactly once after impulse
             post_impulse = daily.iloc[zone.impulse_end_idx + 1:]
             if post_impulse.empty:
                 continue
@@ -66,34 +83,50 @@ def scan_symbol(
 
             retest_bar = post_impulse.iloc[retest_idx]
 
-            # ── Zone invalidation: body close beyond zone ─────────────────────
+            # Zone invalidation: body close beyond zone
             if side == "long" and retest_bar["Close"] < zone.zone_low:
+                log.debug("%s [%s]: zone invalidated on retest", symbol, side)
                 continue
             if side == "short" and retest_bar["Close"] > zone.zone_high:
+                log.debug("%s [%s]: zone invalidated on retest", symbol, side)
                 continue
 
-            # ── Step 3: Confirmation candle (day AFTER retest) ────────────────
+            # Need at least one bar after retest for confirmation
             if retest_idx + 1 >= len(post_impulse):
                 continue
+
             confirm_bar = post_impulse.iloc[retest_idx + 1]
             prev_bar = retest_bar
 
+            # Confirmation check
             if side == "long":
-                if not (confirm_bar["Close"] > confirm_bar["Open"] and
-                        confirm_bar["Close"] > prev_bar["High"]):
-                    continue
+                confirmed = (
+                    confirm_bar["Close"] > confirm_bar["Open"] and
+                    confirm_bar["Close"] > prev_bar["High"]
+                )
             else:
-                if not (confirm_bar["Close"] < confirm_bar["Open"] and
-                        confirm_bar["Close"] < prev_bar["Low"]):
-                    continue
+                confirmed = (
+                    confirm_bar["Close"] < confirm_bar["Open"] and
+                    confirm_bar["Close"] < prev_bar["Low"]
+                )
 
-            # ── This is the most recent bar (yesterday's candle = today signal) ──
-            if retest_idx + 1 != len(post_impulse) - 1:
-                continue  # only emit signals where confirmation is the latest bar
+            if not confirmed:
+                log.debug("%s [%s]: confirmation candle failed", symbol, side)
+                continue
 
-            # ── Compute entry, stop, target ───────────────────────────────────
+            # Check confirmation is within the actionable window
+            confirm_pos = retest_idx + 1        # position within post_impulse
+            bars_since = len(post_impulse) - 1 - confirm_pos
+
+            if bars_since > CONFIRMATION_WINDOW:
+                log.debug("%s [%s]: confirmation too old (%d bars ago)", symbol, side, bars_since)
+                continue
+
+            # Compute entry, stop, target
             atr = compute_atr(daily)
-            current_atr = float(atr.iloc[zone.impulse_end_idx + retest_idx + 1])
+            atr_idx = zone.impulse_end_idx + confirm_pos + 1
+            atr_idx = min(atr_idx, len(atr) - 1)
+            current_atr = float(atr.iloc[atr_idx])
             entry = float(confirm_bar["Close"])
 
             if side == "long":
@@ -103,16 +136,16 @@ def scan_symbol(
 
             target = find_nearest_opposite_zone(daily, entry, side)
             if target is None:
-                # fallback: 2R target
                 rr = abs(entry - stop)
-                target = round(entry + rr * 2 if side == "long" else entry - rr * 2, 2)
+                target = round(
+                    entry + rr * 2 if side == "long" else entry - rr * 2, 2
+                )
 
-            # ── Quality score ─────────────────────────────────────────────────
             expansion = zone.atr_end / zone.atr_before if zone.atr_before > 0 else 1.0
             rr_ratio = abs(target - entry) / abs(entry - stop) if abs(entry - stop) > 0 else 0.0
             quality = round((expansion - 1.0) * 0.4 + min(rr_ratio / 3.0, 1.0) * 0.6, 3)
 
-            signals.append(Signal(
+            sig = Signal(
                 symbol=symbol,
                 side=side,
                 scan_date=str(daily.index[-1].date()),
@@ -130,13 +163,17 @@ def scan_symbol(
                 confirmation_close=round(float(confirm_bar["Close"]), 2),
                 confirmation_prev_high=round(float(prev_bar["High"]), 2),
                 quality_score=quality,
-            ))
+                bars_since_confirmation=bars_since,
+            )
+            log.info("%s [%s]: SIGNAL found | entry=%.2f stop=%.2f target=%.2f confirmed %d bar(s) ago",
+                     symbol, side, entry, stop, target or 0, bars_since)
+            signals.append(sig)
 
     return signals
 
 
 def _find_first_retest(post_impulse: pd.DataFrame, zone, side: str) -> Optional[int]:
-    """Return the index (within post_impulse) of the first retest bar."""
+    """Return index within post_impulse of the first retest bar."""
     for i, (_, row) in enumerate(post_impulse.iterrows()):
         if side == "long":
             if row["Low"] <= zone.zone_high and row["High"] >= zone.zone_low:
