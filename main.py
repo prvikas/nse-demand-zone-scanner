@@ -20,8 +20,11 @@ log.info("scanner.log opened - logging initialised")
 
 
 def _get_swing_narrative(symbol, daily_df, weekly_df):
-    """Return swing structure + projected trade levels for email."""
-    from indicators import find_pivot_highs, find_pivot_lows, detect_structure, compute_atr
+    """Return swing structure + projected trade levels + RSI/Volume for the issue."""
+    from indicators import (
+        find_pivot_highs, find_pivot_lows, detect_structure,
+        compute_atr, compute_rsi, compute_volume_ratio,
+    )
     from zones import find_zones, find_nearest_opposite_zone
     from config import STRUCTURE_SWING_COUNT, STOP_ATR_BUFFER
 
@@ -45,6 +48,12 @@ def _get_swing_narrative(symbol, daily_df, weekly_df):
     atr           = compute_atr(daily_df)
     current_atr   = round(float(atr.iloc[-1]), 2)
 
+    # RSI and Volume ratio at the latest daily close
+    rsi_series       = compute_rsi(daily_df)
+    vol_series       = compute_volume_ratio(daily_df)
+    rsi_latest       = round(float(rsi_series.iloc[-1]), 1)
+    vol_ratio_latest = round(float(vol_series.iloc[-1]), 2)
+
     side  = "long" if daily_structure == "bullish" else "short"
     zones = find_zones(daily_df, side)
 
@@ -62,15 +71,15 @@ def _get_swing_narrative(symbol, daily_df, weekly_df):
 
     if nearest_zone:
         if daily_structure == "bullish":
-            entry  = round(nearest_zone.zone_high, 2)          # enter at top of demand zone
-            stop   = round(nearest_zone.zone_low - STOP_ATR_BUFFER * current_atr, 2)
+            entry      = round(nearest_zone.zone_high, 2)
+            stop       = round(nearest_zone.zone_low - STOP_ATR_BUFFER * current_atr, 2)
             raw_target = find_nearest_opposite_zone(daily_df, entry, "long")
             if raw_target is None:
                 raw_target = round(entry + abs(entry - stop) * 2, 2)
             target = round(raw_target, 2)
         else:
-            entry  = round(nearest_zone.zone_low, 2)           # enter at bottom of supply zone
-            stop   = round(nearest_zone.zone_high + STOP_ATR_BUFFER * current_atr, 2)
+            entry      = round(nearest_zone.zone_low, 2)
+            stop       = round(nearest_zone.zone_high + STOP_ATR_BUFFER * current_atr, 2)
             raw_target = find_nearest_opposite_zone(daily_df, entry, "short")
             if raw_target is None:
                 raw_target = round(entry - abs(entry - stop) * 2, 2)
@@ -93,6 +102,8 @@ def _get_swing_narrative(symbol, daily_df, weekly_df):
         stop=stop,
         target=target,
         rr=rr,
+        rsi_latest=rsi_latest,
+        vol_ratio_latest=vol_ratio_latest,
     )
 
 
@@ -182,7 +193,7 @@ def run():
     try:
         new_signals      = repo.get_new_signals_today(today)
         resolved_signals = repo.get_today_resolved_signals(today)
-        log.info("Email: %d new, %d resolved, %d structure",
+        log.info("Issue: %d new, %d resolved, %d structure",
                  len(new_signals), len(resolved_signals), len(structure_data))
         send_daily_report(new_signals, resolved_signals, today, structure_data)
         log.info("Issue report created")
