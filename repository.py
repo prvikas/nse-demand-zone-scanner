@@ -15,6 +15,11 @@ def _conn():
     return psycopg2.connect(DATABASE_URL)
 
 
+def _f(v) -> Optional[float]:
+    """Cast numpy/pandas scalar to plain Python float (psycopg2 safe)."""
+    return float(v) if v is not None else None
+
+
 # ── Schema ────────────────────────────────────────────────────────────────────
 
 CREATE_TABLES_SQL = """
@@ -37,6 +42,8 @@ CREATE TABLE IF NOT EXISTS signals (
     confirmation_close NUMERIC,
     confirmation_prev_high NUMERIC,
     quality_score   NUMERIC,
+    bars_since_confirmation INT DEFAULT 0,
+    retest_number   INT DEFAULT 1,
     status          TEXT NOT NULL DEFAULT 'open',
     resolved_at     DATE,
     resolution_reason TEXT,
@@ -61,6 +68,17 @@ def init_schema():
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute(CREATE_TABLES_SQL)
+            # Add new columns if upgrading from older schema
+            for col, defn in [
+                ("bars_since_confirmation", "INT DEFAULT 0"),
+                ("retest_number", "INT DEFAULT 1"),
+            ]:
+                cur.execute(f"""
+                    DO $$ BEGIN
+                        ALTER TABLE signals ADD COLUMN {col} {defn};
+                    EXCEPTION WHEN duplicate_column THEN NULL;
+                    END $$;
+                """)
         conn.commit()
     log.info("Schema initialised")
 
@@ -73,18 +91,41 @@ def insert_signal(sig) -> int:
             (symbol, side, scan_date, confirmation_date, entry_price, stop_loss,
              target_price, zone_low, zone_high, weekly_structure, daily_structure,
              atr_before, atr_end, atr_expansion, confirmation_close,
-             confirmation_prev_high, quality_score)
+             confirmation_prev_high, quality_score,
+             bars_since_confirmation, retest_number)
         VALUES
             (%(symbol)s, %(side)s, %(scan_date)s, %(confirmation_date)s,
              %(entry_price)s, %(stop_loss)s, %(target_price)s, %(zone_low)s,
              %(zone_high)s, %(weekly_structure)s, %(daily_structure)s,
              %(atr_before)s, %(atr_end)s, %(atr_expansion)s,
-             %(confirmation_close)s, %(confirmation_prev_high)s, %(quality_score)s)
+             %(confirmation_close)s, %(confirmation_prev_high)s, %(quality_score)s,
+             %(bars_since_confirmation)s, %(retest_number)s)
         RETURNING signal_id
     """
+    params = dict(
+        symbol=str(sig.symbol),
+        side=str(sig.side),
+        scan_date=sig.scan_date,
+        confirmation_date=sig.confirmation_date,
+        entry_price=_f(sig.entry_price),
+        stop_loss=_f(sig.stop_loss),
+        target_price=_f(sig.target_price),
+        zone_low=_f(sig.zone_low),
+        zone_high=_f(sig.zone_high),
+        weekly_structure=str(sig.weekly_structure),
+        daily_structure=str(sig.daily_structure),
+        atr_before=_f(sig.atr_before),
+        atr_end=_f(sig.atr_end),
+        atr_expansion=_f(sig.atr_expansion),
+        confirmation_close=_f(sig.confirmation_close),
+        confirmation_prev_high=_f(sig.confirmation_prev_high),
+        quality_score=_f(sig.quality_score),
+        bars_since_confirmation=int(sig.bars_since_confirmation),
+        retest_number=int(sig.retest_number),
+    )
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, sig.__dict__)
+            cur.execute(sql, params)
             signal_id = cur.fetchone()[0]
         conn.commit()
     return signal_id
@@ -115,10 +156,12 @@ def insert_event(signal_id: int, event_date: date, event_type: str,
     """
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, dict(signal_id=signal_id, event_date=event_date,
-                                  event_type=event_type, old_status=old_status,
-                                  new_status=new_status, price_snapshot=price_snapshot,
-                                  notes=notes))
+            cur.execute(sql, dict(
+                signal_id=signal_id, event_date=event_date,
+                event_type=event_type, old_status=old_status,
+                new_status=new_status, price_snapshot=_f(price_snapshot),
+                notes=notes,
+            ))
         conn.commit()
 
 
@@ -152,13 +195,19 @@ def signal_already_exists(symbol: str, side: str, zone_low: float, zone_high: fl
     """Prevent duplicate signals for the same zone."""
     sql = """
         SELECT 1 FROM signals
-        WHERE symbol = %(symbol)s AND side = %(side)s
-          AND zone_low = %(zone_low)s AND zone_high = %(zone_high)s
+        WHERE symbol = %(symbol)s
+          AND side = %(side)s
+          AND zone_low = %(zone_low)s
+          AND zone_high = %(zone_high)s
           AND status = 'open'
         LIMIT 1
     """
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, dict(symbol=symbol, side=side,
-                                  zone_low=zone_low, zone_high=zone_high))
+            cur.execute(sql, dict(
+                symbol=str(symbol),
+                side=str(side),
+                zone_low=_f(zone_low),
+                zone_high=_f(zone_high),
+            ))
             return cur.fetchone() is not None
