@@ -38,6 +38,7 @@ def run():
         log.error(traceback.format_exc())
         sys.exit(1)
 
+    # today = the date this scanner RAN (not the last yfinance bar date)
     today = date.today()
     log.info("=== NSE Scanner starting - %s ===", today)
 
@@ -61,7 +62,6 @@ def run():
 
     update_open_signals(price_data)
 
-    # Scan for new signals
     new_signal_ids = []
     scanned = 0
     for symbol, daily_df in price_data.items():
@@ -71,7 +71,8 @@ def run():
                 {"Open": "first", "High": "max", "Low": "min",
                  "Close": "last", "Volume": "sum"}
             ).dropna()
-            signals = scan_symbol(symbol, daily_df, weekly_df)
+            # Pass today so strategy stamps signals with the RUN date
+            signals = scan_symbol(symbol, daily_df, weekly_df, today)
         except Exception as exc:
             log.warning("scan_symbol failed for %s: %s", symbol, exc)
             continue

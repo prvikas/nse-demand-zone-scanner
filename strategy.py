@@ -8,10 +8,12 @@ Key rules:
 - Retest: ANY touch of zone after impulse (2nd, 3rd visits all valid)
 - Confirmation: candle after retest closes beyond prior bar's high/low
 - Signal window: confirmation within last CONFIRMATION_WINDOW bars (default 3)
-- Zone invalidation: body close THROUGH the zone (not just a wick)
+- Zone invalidation: body close THROUGH the zone
+- scan_date: always the date the scanner RAN (passed in as run_date)
 """
 import logging
 from dataclasses import dataclass
+from datetime import date
 from typing import List, Optional
 import pandas as pd
 
@@ -21,16 +23,16 @@ from zones import find_zones, find_nearest_opposite_zone
 
 log = logging.getLogger(__name__)
 
-CONFIRMATION_WINDOW = 3   # confirmation valid if within last N bars
-MAX_RETESTS = 5           # cap retests per zone to avoid noise
+CONFIRMATION_WINDOW = 3
+MAX_RETESTS = 5
 
 
 @dataclass
 class Signal:
     symbol: str
     side: str
-    scan_date: str
-    confirmation_date: str
+    scan_date: str          # date the scanner ran (today)
+    confirmation_date: str  # date of the confirmation candle on the chart
     entry_price: float
     stop_loss: float
     target_price: Optional[float]
@@ -52,17 +54,20 @@ def scan_symbol(
     symbol: str,
     daily: pd.DataFrame,
     weekly: pd.DataFrame,
+    run_date: Optional[date] = None,
 ) -> List[Signal]:
     """Run the full strategy pipeline. Checks ALL retests of every zone."""
-    signals: List[Signal] = []
+    if run_date is None:
+        from datetime import date as _date
+        run_date = _date.today()
 
+    signals: List[Signal] = []
     weekly_structure = detect_structure(weekly)
     daily_structure  = detect_structure(daily)
 
     for side in ["long", "short"]:
         required = "bullish" if side == "long" else "bearish"
 
-        # Weekly must agree OR be neutral (daily leads)
         if weekly_structure != required and weekly_structure != "neutral":
             continue
         if daily_structure != required:
@@ -78,11 +83,9 @@ def scan_symbol(
                 continue
 
             atr = compute_atr(daily)
-
-            # ── Walk ALL retests of this zone ─────────────────────────────
-            search_from = 0          # slide forward after each retest
+            search_from = 0
             retest_count = 0
-            zone_valid = True        # flip False if price closes through zone
+            zone_valid = True
 
             while retest_count < MAX_RETESTS and zone_valid:
                 slice_df = post_impulse.iloc[search_from:]
@@ -95,21 +98,17 @@ def scan_symbol(
 
                 retest_count += 1
                 retest_bar = slice_df.iloc[retest_local]
-                abs_retest_idx = search_from + retest_local  # index within post_impulse
+                abs_retest_idx = search_from + retest_local
 
-                # Zone invalidation: body closed through zone → stop scanning
+                # Zone invalidation
                 if side == "long" and retest_bar["Close"] < zone.zone_low:
-                    log.debug("%s [%s]: zone invalidated at retest #%d", symbol, side, retest_count)
                     zone_valid = False
                     break
                 if side == "short" and retest_bar["Close"] > zone.zone_high:
-                    log.debug("%s [%s]: zone invalidated at retest #%d", symbol, side, retest_count)
                     zone_valid = False
                     break
 
-                # Need a bar after retest for confirmation
                 if abs_retest_idx + 1 >= len(post_impulse):
-                    # retest is the very last bar — no confirmation yet
                     search_from = abs_retest_idx + 1
                     continue
 
@@ -128,20 +127,17 @@ def scan_symbol(
                     )
 
                 if not confirmed:
-                    # No confirmation here — advance past retest and keep looking
                     search_from = abs_retest_idx + 1
                     continue
 
-                # How fresh is this confirmation?
                 confirm_abs = abs_retest_idx + 1
                 bars_since  = len(post_impulse) - 1 - confirm_abs
 
                 if bars_since > CONFIRMATION_WINDOW:
-                    # Confirmed but stale — keep walking (a later retest may be fresh)
                     search_from = abs_retest_idx + 1
                     continue
 
-                # ── Valid fresh signal ────────────────────────────────────
+                # Valid fresh signal
                 atr_idx     = min(zone.impulse_end_idx + confirm_abs + 1, len(atr) - 1)
                 current_atr = float(atr.iloc[atr_idx])
                 entry       = float(confirm_bar["Close"])
@@ -173,7 +169,7 @@ def scan_symbol(
                 signals.append(Signal(
                     symbol=symbol,
                     side=side,
-                    scan_date=str(daily.index[-1].date()),
+                    scan_date=str(run_date),          # RUN date, not bar date
                     confirmation_date=str(confirm_bar.name.date()),
                     entry_price=round(entry, 2),
                     stop_loss=round(stop, 2),
@@ -192,18 +188,12 @@ def scan_symbol(
                     retest_number=retest_count,
                 ))
 
-                # Advance past this confirmation — look for more retests
                 search_from = abs_retest_idx + 2
 
     return signals
 
 
-def _find_next_retest(
-    df: pd.DataFrame,
-    zone,
-    side: str,
-) -> Optional[int]:
-    """Return index (within df) of the next bar that touches the zone."""
+def _find_next_retest(df: pd.DataFrame, zone, side: str) -> Optional[int]:
     for i, (_, row) in enumerate(df.iterrows()):
         if side == "long":
             if row["Low"] <= zone.zone_high and row["High"] >= zone.zone_low:
