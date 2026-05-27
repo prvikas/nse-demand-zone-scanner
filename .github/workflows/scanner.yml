@@ -7,7 +7,7 @@ on:
   workflow_dispatch:          # Allow manual trigger from GitHub UI
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # opt into Node.js 24 now
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   scan:
@@ -39,28 +39,33 @@ jobs:
             echo "Please add them under Settings → Secrets and variables → Actions"
             exit 1
           fi
-          echo "All required secrets are present."
+          echo "✅ All required secrets are present."
         env:
           DATABASE_URL:       ${{ secrets.DATABASE_URL }}
           EMAIL_USER:         ${{ secrets.EMAIL_USER }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
           EMAIL_TO:           ${{ secrets.EMAIL_TO }}
+
+      - name: Check DB connection and init schema
+        run: |
+          set -euo pipefail
+          echo "--- Checking DB connection and initialising schema ---"
+          python db_check.py
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
       - name: Run scanner
+        run: |
+          set -euo pipefail
+          python main.py 2>&1 | tee scanner.log
+          exit ${PIPESTATUS[0]}
         env:
           DATABASE_URL:       ${{ secrets.DATABASE_URL }}
           EMAIL_USER:         ${{ secrets.EMAIL_USER }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
           EMAIL_TO:           ${{ secrets.EMAIL_TO }}
-          # Optional overrides — uncomment and change to customise
-          # PIVOT_DEPTH:        "3"
-          # IMPULSE_MIN_BARS:   "3"
-          # ATR_EXPANSION_FACTOR: "1.2"
-          # STOP_ATR_BUFFER:    "0.3"
-          # MAX_OPEN_DAYS:      "20"
-        run: python main.py 2>&1 | tee scanner.log
 
-      - name: Upload run log as artifact
+      - name: Upload run log
         if: always()
         uses: actions/upload-artifact@v4
         with:
