@@ -4,6 +4,7 @@ Strategy:
 - Label all scanner issues with 'nse-scanner-report'
 - On each run: archive issues older than 7 days, close previous open, create today's
 - Uses GITHUB_TOKEN (zero extra secrets)
+- Open setup lifecycle is tracked in DB; each day's issue shows resolved/still-open
 """
 import logging
 import os
@@ -104,34 +105,35 @@ def send_daily_report(
     _archive_old_issues()
     _close_previous_open_issues()
 
-    title = f"NSE Scanner — {scan_date} | {len(new_signals)} new setup(s)"
+    title = f"NSE Scanner \u2014 {scan_date} | {len(new_signals)} new setup(s)"
     body  = _build_body(new_signals, resolved_signals, scan_date, structure_data or [])
 
     issue = _gh_request("POST", f"/repos/{REPO}/issues", {
         "title": title, "body": body, "labels": [LABEL_NAME],
     })
     if issue:
-        log.info("Issue created: #%d — %s", issue["number"], issue["html_url"])
+        log.info("Issue created: #%d \u2014 %s", issue["number"], issue["html_url"])
     else:
         log.error("Failed to create GitHub issue")
 
 
+# \u2500\u2500 Helpers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
 def _rsi_badge(rsi: float, side: str) -> str:
-    """Coloured text label for RSI value."""
     if side == "long":
-        tag = "🟢" if rsi >= 60 else "🟡" if rsi >= 50 else "🔴"
+        tag = "\U0001f7e2" if rsi >= 60 else "\U0001f7e1" if rsi >= 50 else "\U0001f534"
     else:
-        tag = "🔴" if rsi <= 40 else "🟡" if rsi <= 50 else "🟢"
-    return f"{tag} {rsi:.1f}"
+        tag = "\U0001f534" if rsi <= 40 else "\U0001f7e1" if rsi <= 50 else "\U0001f7e2"
+    return f"{tag}\u202f{rsi:.1f}"
 
 
 def _vol_badge(ratio: float) -> str:
-    """Volume ratio with emoji tier."""
-    tag = "🔥" if ratio >= 2.0 else "⬆️" if ratio >= 1.5 else "✅"
-    return f"{tag} {ratio:.2f}x"
+    tag = "\U0001f525" if ratio >= 2.0 else "\u2b06\ufe0f" if ratio >= 1.5 else "\u2705"
+    return f"{tag}\u202f{ratio:.2f}x"
 
 
 def _swing_paragraph(s: dict) -> str:
+    """One stock block in the Market Structure Review section."""
     sym    = s["symbol"].replace(".NS", "")
     cmp    = s["current_price"]
     highs  = s["pivot_highs"]
@@ -142,41 +144,51 @@ def _swing_paragraph(s: dict) -> str:
     target = s.get("target")
     rr     = s.get("rr")
     weekly = s["weekly_structure"]
+    # RSI + Vol at the time of the latest daily close (from structure scan)
+    rsi_val  = s.get("rsi_latest")
+    vol_val  = s.get("vol_ratio_latest")
+    dstruct  = s["daily_structure"]
 
+    rsi_line = (
+        f"- RSI: {_rsi_badge(rsi_val, dstruct)} &nbsp;|&nbsp; "
+        f"Vol ratio: {_vol_badge(vol_val)}\n"
+        if rsi_val is not None and vol_val is not None
+        else ""
+    )
     levels_line = (
-        f"- **Entry:** {entry} &nbsp;|&nbsp; **Stop:** {stop} "
-        f"&nbsp;|&nbsp; **Target:** {target} &nbsp;|&nbsp; **R:R** {rr}R\n"
+        f"- **Entry:** {entry}\u00a0|\u00a0**Stop:** {stop}"
+        f"\u00a0|\u00a0**Target:** {target}\u00a0|\u00a0**R:R** {rr}R\n"
         if entry and stop and target
         else "- _No zone close enough to price for level calculation_\n"
     )
-    zone_line = f"- Zone: **{zl} – {zh}**\n" if zl else "- Zone: _none identified_\n"
+    zone_line = f"- Zone: **{zl} \u2013 {zh}**\n" if zl else "- Zone: _none identified_\n"
 
-    if s["daily_structure"] == "bullish":
-        hh = " → ".join(f"**{p}** ({d})" for d, p in highs)
-        hl = " → ".join(f"**{p}** ({d})" for d, p in lows)
+    if dstruct == "bullish":
+        hh = " \u2192 ".join(f"**{p}** ({d})" for d, p in highs)
+        hl = " \u2192 ".join(f"**{p}** ({d})" for d, p in lows)
         weekly_note = (
-            "Weekly also bullish — high conviction 🟢" if weekly == "bullish" else
-            "Weekly neutral — daily leading ⚪" if weekly == "neutral" else
-            "Weekly bearish — counter-trend caution 🔴"
+            "Weekly also bullish \u2014 high conviction \U0001f7e2" if weekly == "bullish" else
+            "Weekly neutral \u2014 daily leading \u26aa" if weekly == "neutral" else
+            "Weekly bearish \u2014 counter-trend caution \U0001f534"
         )
         return (
             f"**{sym}** &nbsp;`CMP: {cmp}` &nbsp;`BULLISH`\n"
             f"- HH: {hh}\n- HL: {hl}\n"
-            + zone_line + levels_line
+            + zone_line + rsi_line + levels_line
             + f"- {weekly_note}\n\n"
         )
     else:
-        lh = " → ".join(f"**{p}** ({d})" for d, p in highs)
-        ll = " → ".join(f"**{p}** ({d})" for d, p in lows)
+        lh = " \u2192 ".join(f"**{p}** ({d})" for d, p in highs)
+        ll = " \u2192 ".join(f"**{p}** ({d})" for d, p in lows)
         weekly_note = (
-            "Weekly also bearish — high conviction 🔴" if weekly == "bearish" else
-            "Weekly neutral — daily leading ⚪" if weekly == "neutral" else
-            "Weekly bullish — counter-trend caution 🟢"
+            "Weekly also bearish \u2014 high conviction \U0001f534" if weekly == "bearish" else
+            "Weekly neutral \u2014 daily leading \u26aa" if weekly == "neutral" else
+            "Weekly bullish \u2014 counter-trend caution \U0001f7e2"
         )
         return (
             f"**{sym}** &nbsp;`CMP: {cmp}` &nbsp;`BEARISH`\n"
             f"- LH: {lh}\n- LL: {ll}\n"
-            + zone_line + levels_line
+            + zone_line + rsi_line + levels_line
             + f"- {weekly_note}\n\n"
         )
 
@@ -188,7 +200,7 @@ def _build_body(
     structure_data: List[dict],
 ) -> str:
 
-    # -- New signals ----------------------------------------------------------
+    # ── New signals ───────────────────────────────────────────────────────────
     if new_signals:
         rows  = "| Symbol | Side | CMP | Confirm Date | Entry | Stop | Target | R:R | RSI | Vol | Zone | Retest# | Score |\n"
         rows += "|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
@@ -202,72 +214,104 @@ def _build_body(
             vol_disp = _vol_badge(float(s.get("volume_ratio") or 0))
             rows += (
                 f"| **{s['symbol'].replace('.NS','')}** "
-                f"| {'🟢 LONG' if s['side']=='long' else '🔴 SHORT'} "
-                f"| **{s.get('cmp', '—')}** "
+                f"| {'\U0001f7e2 LONG' if s['side']=='long' else '\U0001f534 SHORT'} "
+                f"| **{s.get('cmp', '\u2014')}** "
                 f"| {s.get('confirmation_date', s['scan_date'])} "
                 f"| {s['entry_price']} "
                 f"| {s['stop_loss']} "
-                f"| {s.get('target_price', '—')} "
+                f"| {s.get('target_price', '\u2014')} "
                 f"| {rr} "
                 f"| {rsi_disp} "
                 f"| {vol_disp} "
-                f"| {s['zone_low']} – {s['zone_high']} "
+                f"| {s['zone_low']} \u2013 {s['zone_high']} "
                 f"| {s.get('retest_number', 1)} "
                 f"| {s.get('quality_score', '')} |\n"
             )
-        new_section = f"## 🆕 New Confirmed Setups\n\n{rows}\n"
+        new_section = f"## \U0001f195 New Confirmed Setups\n\n{rows}\n"
     else:
-        new_section = "## 🆕 New Confirmed Setups\n\n_No new confirmed setups today._\n\n"
+        new_section = (
+            "## \U0001f195 New Confirmed Setups\n\n"
+            "_No new confirmed setups today._\n\n"
+            "> **Why no setups?** A confirmed setup requires **all five** conditions to be met "
+            "on the same bar: (1) daily structure HH+HL or LH+LL, (2) price retest of a "
+            "supply/demand zone, (3) confirmation candle closing beyond the prior bar's high/low, "
+            "(4) RSI \u2265 50 and rising (longs) or \u2264 50 and falling (shorts), "
+            "(5) confirmation bar volume \u2265 1.3\u00d7 the 20-day average. "
+            "On quiet or indecisive days all five rarely align \u2014 that is by design. "
+            "Use the Market Structure Review below to monitor stocks approaching zones "
+            "and prepare watchlists for the next session.\n\n"
+        )
 
-    # -- Resolved -------------------------------------------------------------
+    # ── Resolved / open updates ───────────────────────────────────────────────
     if resolved_signals:
         rows  = "| Symbol | Side | Rec. On | Resolved On | Status | Reason |\n"
         rows += "|---|---|---|---|---|---|\n"
         for s in resolved_signals:
             status_emoji = (
-                "✅ Target Hit" if s.get("status") == "target_hit" else
-                "❌ Stop Hit"   if s.get("status") == "stop_hit"   else
-                "⚪ Invalidated"
+                "\u2705 Target Hit" if s.get("status") == "target_hit" else
+                "\u274c Stop Hit"   if s.get("status") == "stop_hit"   else
+                "\u26aa Invalidated"
             )
             rows += (
                 f"| **{s['symbol'].replace('.NS','')}** "
                 f"| {s['side'].upper()} "
                 f"| {s['scan_date']} "
-                f"| {s.get('resolved_at', '—')} "
+                f"| {s.get('resolved_at', '\u2014')} "
                 f"| {status_emoji} "
                 f"| {s.get('resolution_reason', '')} |\n"
             )
-        resolved_section = f"## 📋 Updates on Open Setups\n\n{rows}\n"
+        resolved_section = (
+            "## \U0001f4cb Updates on Open Setups\n\n"
+            "> Each day a **new issue** is created. Open setups from previous days are "
+            "tracked in the database and checked against today's high/low/close. "
+            "If stop, target or zone invalidation is triggered, the signal is marked resolved "
+            "and appears in this table. Issues older than 7 days are archived automatically.\n\n"
+            + rows + "\n"
+        )
     else:
-        resolved_section = "## 📋 Updates on Open Setups\n\n_No updates on open setups today._\n\n"
+        resolved_section = (
+            "## \U0001f4cb Updates on Open Setups\n\n"
+            "> Each day a **new issue** is created. Open setups from previous days are "
+            "tracked in the database and checked against today's high/low/close. "
+            "If stop, target or zone invalidation is triggered, the signal is marked resolved "
+            "and appears in this table. Issues older than 7 days are archived automatically.\n\n"
+            "_No open setups were resolved today._\n\n"
+        )
 
-    # -- Structure narrative --------------------------------------------------
+    # ── Structure narrative ───────────────────────────────────────────────────
     bullish = [s for s in structure_data if s["daily_structure"] == "bullish"][:MAX_PER_SIDE]
     bearish = [s for s in structure_data if s["daily_structure"] == "bearish"][:MAX_PER_SIDE]
 
-    struct_section  = "## 📊 Market Structure Review — for backtesting\n\n"
-    struct_section += (
-        f"> Up to {MAX_PER_SIDE} stocks per side. "
-        "**Entry** = projected zone entry | **Stop** = zone edge + ATR buffer | "
-        "**Target** = nearest opposite zone or 2R. Verify on charts before acting.\n\n"
+    struct_section = (
+        "## \U0001f4ca Market Structure Review \u2014 Watchlist Builder\n\n"
+        "> **How to use this section:** These stocks are in a confirmed daily swing structure "
+        "(HH+HL = bullish, LH+LL = bearish) but have **not yet met all five signal conditions**. "
+        "Use them as a **watchlist for the next 1\u20133 sessions**. "
+        "Watch for price to pull back into the listed Zone, then look for a confirmation candle "
+        "with RSI turning in the trend direction and volume \u2265 1.3\u00d7 average \u2014 "
+        "that is your manual entry trigger. "
+        "Entry / Stop / Target levels are projections based on the nearest zone + ATR buffer; "
+        "always verify on your chart before acting. "
+        f"Showing up to {MAX_PER_SIDE} stocks per side, sorted by structure quality.\n\n"
     )
 
     if bullish:
-        struct_section += f"### ▲ Bullish — HH + HL ({len(bullish)} stocks)\n\n"
+        struct_section += f"### \u25b2 Bullish \u2014 HH + HL ({len(bullish)} stocks)\n\n"
         struct_section += "".join(_swing_paragraph(s) for s in bullish)
     if bearish:
-        struct_section += f"### ▼ Bearish — LH + LL ({len(bearish)} stocks)\n\n"
+        struct_section += f"### \u25bc Bearish \u2014 LH + LL ({len(bearish)} stocks)\n\n"
         struct_section += "".join(_swing_paragraph(s) for s in bearish)
     if not bullish and not bearish:
         struct_section += "_No clear structure identified today._\n"
 
     footer = (
         "---\n"
-        "_Automated scan — Nifty 500. Not financial advice. Verify on charts before trading._"
+        "_Automated scan \u2014 Nifty 500. Not financial advice. "
+        "Verify on charts before trading._"
     )
 
     return (
-        f"# NSE Supply/Demand Scanner — {scan_date}\n\n"
+        f"# NSE Supply/Demand Scanner \u2014 {scan_date}\n\n"
         + new_section
         + resolved_section
         + struct_section
