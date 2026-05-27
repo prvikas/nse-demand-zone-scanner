@@ -6,6 +6,9 @@ on:
     - cron: '0 4 * * 1-5'   # Monday–Friday only
   workflow_dispatch:          # Allow manual trigger from GitHub UI
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # opt into Node.js 24 now
+
 jobs:
   scan:
     runs-on: ubuntu-latest
@@ -24,6 +27,25 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Validate secrets are set
+        run: |
+          missing=""
+          [ -z "$DATABASE_URL" ]       && missing="$missing DATABASE_URL"
+          [ -z "$EMAIL_USER" ]         && missing="$missing EMAIL_USER"
+          [ -z "$EMAIL_APP_PASSWORD" ] && missing="$missing EMAIL_APP_PASSWORD"
+          [ -z "$EMAIL_TO" ]           && missing="$missing EMAIL_TO"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing required secrets:$missing"
+            echo "Please add them under Settings → Secrets and variables → Actions"
+            exit 1
+          fi
+          echo "All required secrets are present."
+        env:
+          DATABASE_URL:       ${{ secrets.DATABASE_URL }}
+          EMAIL_USER:         ${{ secrets.EMAIL_USER }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          EMAIL_TO:           ${{ secrets.EMAIL_TO }}
+
       - name: Run scanner
         env:
           DATABASE_URL:       ${{ secrets.DATABASE_URL }}
@@ -36,12 +58,13 @@ jobs:
           # ATR_EXPANSION_FACTOR: "1.2"
           # STOP_ATR_BUFFER:    "0.3"
           # MAX_OPEN_DAYS:      "20"
-        run: python main.py
+        run: python main.py 2>&1 | tee scanner.log
 
       - name: Upload run log as artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: scanner-log-${{ github.run_id }}
-          path: '*.log'
+          path: scanner.log
+          if-no-files-found: warn
           retention-days: 30

@@ -1,22 +1,27 @@
 """Entry point for the daily scan + lifecycle update + email report."""
 import logging
+import sys
 from datetime import date
-
-import repository as repo
-from universe import get_nifty500_symbols
-from data_loader import fetch_all, fetch_weekly
-from strategy import scan_symbol
-from lifecycle import update_open_signals
-from notifier import send_daily_report
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+    ]
 )
 log = logging.getLogger(__name__)
 
 
 def run():
+    # Late imports so config errors are caught after logging is set up
+    import repository as repo
+    from universe import get_nifty500_symbols
+    from data_loader import fetch_all
+    from strategy import scan_symbol
+    from lifecycle import update_open_signals
+    from notifier import send_daily_report
+
     today = date.today()
     log.info("=== NSE Scanner starting — %s ===", today)
 
@@ -75,4 +80,10 @@ def run():
 
 
 if __name__ == "__main__":
-    run()
+    try:
+        run()
+    except SystemExit:
+        raise  # propagate clean sys.exit() calls (e.g. from config)
+    except Exception as exc:
+        log.exception("Unhandled exception: %s", exc)
+        sys.exit(1)
