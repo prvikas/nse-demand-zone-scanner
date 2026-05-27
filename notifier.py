@@ -23,6 +23,25 @@ LABEL_NAME   = "nse-scanner-report"
 KEEP_DAYS    = 7
 MAX_PER_SIDE = 20
 
+# Pre-computed emoji constants (avoids backslash-in-f-string on Python < 3.12)
+_GREEN  = "\U0001f7e2"   # 🟢
+_YELLOW = "\U0001f7e1"   # 🟡
+_RED    = "\U0001f534"   # 🔴
+_FIRE   = "\U0001f525"   # 🔥
+_UP     = "\u2b06\ufe0f" # ⬆️
+_TICK   = "\u2705"       # ✅
+_CROSS  = "\u274c"       # ❌
+_CIRCLE = "\u26aa"       # ⚪
+_NEW    = "\U0001f195"   # 🆕
+_CLIP   = "\U0001f4cb"   # 📋
+_CHART  = "\U0001f4ca"   # 📊
+_BULL   = "\u25b2"       # ▲
+_BEAR   = "\u25bc"       # ▼
+_DASH   = "\u2014"       # —
+_ARROW  = "\u2192"       # →
+_NBSP   = "\u00a0"       # non-breaking space
+_NNBSP  = "\u202f"       # narrow non-breaking space
+
 
 def _gh_request(method: str, path: str, body: dict = None):
     url     = f"{API_BASE}{path}"
@@ -105,49 +124,48 @@ def send_daily_report(
     _archive_old_issues()
     _close_previous_open_issues()
 
-    title = f"NSE Scanner \u2014 {scan_date} | {len(new_signals)} new setup(s)"
+    title = f"NSE Scanner {_DASH} {scan_date} | {len(new_signals)} new setup(s)"
     body  = _build_body(new_signals, resolved_signals, scan_date, structure_data or [])
 
     issue = _gh_request("POST", f"/repos/{REPO}/issues", {
         "title": title, "body": body, "labels": [LABEL_NAME],
     })
     if issue:
-        log.info("Issue created: #%d \u2014 %s", issue["number"], issue["html_url"])
+        log.info("Issue created: #%d %s %s", issue["number"], _DASH, issue["html_url"])
     else:
         log.error("Failed to create GitHub issue")
 
 
-# \u2500\u2500 Helpers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _rsi_badge(rsi: float, side: str) -> str:
     if side == "long":
-        tag = "\U0001f7e2" if rsi >= 60 else "\U0001f7e1" if rsi >= 50 else "\U0001f534"
+        tag = _GREEN if rsi >= 60 else _YELLOW if rsi >= 50 else _RED
     else:
-        tag = "\U0001f534" if rsi <= 40 else "\U0001f7e1" if rsi <= 50 else "\U0001f7e2"
-    return f"{tag}\u202f{rsi:.1f}"
+        tag = _RED if rsi <= 40 else _YELLOW if rsi <= 50 else _GREEN
+    return f"{tag}{_NNBSP}{rsi:.1f}"
 
 
 def _vol_badge(ratio: float) -> str:
-    tag = "\U0001f525" if ratio >= 2.0 else "\u2b06\ufe0f" if ratio >= 1.5 else "\u2705"
-    return f"{tag}\u202f{ratio:.2f}x"
+    tag = _FIRE if ratio >= 2.0 else _UP if ratio >= 1.5 else _TICK
+    return f"{tag}{_NNBSP}{ratio:.2f}x"
 
 
 def _swing_paragraph(s: dict) -> str:
     """One stock block in the Market Structure Review section."""
-    sym    = s["symbol"].replace(".NS", "")
-    cmp    = s["current_price"]
-    highs  = s["pivot_highs"]
-    lows   = s["pivot_lows"]
-    zl, zh = s.get("zone_low"), s.get("zone_high")
-    entry  = s.get("entry")
-    stop   = s.get("stop")
-    target = s.get("target")
-    rr     = s.get("rr")
-    weekly = s["weekly_structure"]
-    # RSI + Vol at the time of the latest daily close (from structure scan)
-    rsi_val  = s.get("rsi_latest")
-    vol_val  = s.get("vol_ratio_latest")
-    dstruct  = s["daily_structure"]
+    sym     = s["symbol"].replace(".NS", "")
+    cmp     = s["current_price"]
+    highs   = s["pivot_highs"]
+    lows    = s["pivot_lows"]
+    zl, zh  = s.get("zone_low"), s.get("zone_high")
+    entry   = s.get("entry")
+    stop    = s.get("stop")
+    target  = s.get("target")
+    rr      = s.get("rr")
+    weekly  = s["weekly_structure"]
+    rsi_val = s.get("rsi_latest")
+    vol_val = s.get("vol_ratio_latest")
+    dstruct = s["daily_structure"]
 
     rsi_line = (
         f"- RSI: {_rsi_badge(rsi_val, dstruct)} &nbsp;|&nbsp; "
@@ -156,21 +174,22 @@ def _swing_paragraph(s: dict) -> str:
         else ""
     )
     levels_line = (
-        f"- **Entry:** {entry}\u00a0|\u00a0**Stop:** {stop}"
-        f"\u00a0|\u00a0**Target:** {target}\u00a0|\u00a0**R:R** {rr}R\n"
+        f"- **Entry:** {entry}{_NBSP}|{_NBSP}**Stop:** {stop}"
+        f"{_NBSP}|{_NBSP}**Target:** {target}{_NBSP}|{_NBSP}**R:R** {rr}R\n"
         if entry and stop and target
         else "- _No zone close enough to price for level calculation_\n"
     )
-    zone_line = f"- Zone: **{zl} \u2013 {zh}**\n" if zl else "- Zone: _none identified_\n"
+    zone_line = f"- Zone: **{zl} {_DASH} {zh}**\n" if zl else "- Zone: _none identified_\n"
 
     if dstruct == "bullish":
-        hh = " \u2192 ".join(f"**{p}** ({d})" for d, p in highs)
-        hl = " \u2192 ".join(f"**{p}** ({d})" for d, p in lows)
-        weekly_note = (
-            "Weekly also bullish \u2014 high conviction \U0001f7e2" if weekly == "bullish" else
-            "Weekly neutral \u2014 daily leading \u26aa" if weekly == "neutral" else
-            "Weekly bearish \u2014 counter-trend caution \U0001f534"
-        )
+        hh = f" {_ARROW} ".join(f"**{p}** ({d})" for d, p in highs)
+        hl = f" {_ARROW} ".join(f"**{p}** ({d})" for d, p in lows)
+        if weekly == "bullish":
+            weekly_note = f"Weekly also bullish {_DASH} high conviction {_GREEN}"
+        elif weekly == "neutral":
+            weekly_note = f"Weekly neutral {_DASH} daily leading {_CIRCLE}"
+        else:
+            weekly_note = f"Weekly bearish {_DASH} counter-trend caution {_RED}"
         return (
             f"**{sym}** &nbsp;`CMP: {cmp}` &nbsp;`BULLISH`\n"
             f"- HH: {hh}\n- HL: {hl}\n"
@@ -178,13 +197,14 @@ def _swing_paragraph(s: dict) -> str:
             + f"- {weekly_note}\n\n"
         )
     else:
-        lh = " \u2192 ".join(f"**{p}** ({d})" for d, p in highs)
-        ll = " \u2192 ".join(f"**{p}** ({d})" for d, p in lows)
-        weekly_note = (
-            "Weekly also bearish \u2014 high conviction \U0001f534" if weekly == "bearish" else
-            "Weekly neutral \u2014 daily leading \u26aa" if weekly == "neutral" else
-            "Weekly bullish \u2014 counter-trend caution \U0001f7e2"
-        )
+        lh = f" {_ARROW} ".join(f"**{p}** ({d})" for d, p in highs)
+        ll = f" {_ARROW} ".join(f"**{p}** ({d})" for d, p in lows)
+        if weekly == "bearish":
+            weekly_note = f"Weekly also bearish {_DASH} high conviction {_RED}"
+        elif weekly == "neutral":
+            weekly_note = f"Weekly neutral {_DASH} daily leading {_CIRCLE}"
+        else:
+            weekly_note = f"Weekly bullish {_DASH} counter-trend caution {_GREEN}"
         return (
             f"**{sym}** &nbsp;`CMP: {cmp}` &nbsp;`BEARISH`\n"
             f"- LH: {lh}\n- LL: {ll}\n"
@@ -210,27 +230,30 @@ def _build_body(
                 risk   = abs(float(s["entry_price"]) - float(s["stop_loss"]))
                 reward = abs(float(s["target_price"]) - float(s["entry_price"]))
                 rr     = f"{reward/risk:.1f}R" if risk > 0 else "-"
-            rsi_disp = _rsi_badge(float(s.get("rsi_at_confirm") or 0), s["side"])
-            vol_disp = _vol_badge(float(s.get("volume_ratio") or 0))
+            rsi_disp  = _rsi_badge(float(s.get("rsi_at_confirm") or 0), s["side"])
+            vol_disp  = _vol_badge(float(s.get("volume_ratio") or 0))
+            side_text = f"{_GREEN} LONG" if s["side"] == "long" else f"{_RED} SHORT"
+            cmp_val   = s.get("cmp", _DASH)
+            tgt_val   = s.get("target_price", _DASH)
             rows += (
-                f"| **{s['symbol'].replace('.NS','')}** "
-                f"| {'\U0001f7e2 LONG' if s['side']=='long' else '\U0001f534 SHORT'} "
-                f"| **{s.get('cmp', '\u2014')}** "
+                f"| **{s['symbol'].replace('.NS', '')}** "
+                f"| {side_text} "
+                f"| **{cmp_val}** "
                 f"| {s.get('confirmation_date', s['scan_date'])} "
                 f"| {s['entry_price']} "
                 f"| {s['stop_loss']} "
-                f"| {s.get('target_price', '\u2014')} "
+                f"| {tgt_val} "
                 f"| {rr} "
                 f"| {rsi_disp} "
                 f"| {vol_disp} "
-                f"| {s['zone_low']} \u2013 {s['zone_high']} "
+                f"| {s['zone_low']} {_DASH} {s['zone_high']} "
                 f"| {s.get('retest_number', 1)} "
                 f"| {s.get('quality_score', '')} |\n"
             )
-        new_section = f"## \U0001f195 New Confirmed Setups\n\n{rows}\n"
+        new_section = f"## {_NEW} New Confirmed Setups\n\n{rows}\n"
     else:
         new_section = (
-            "## \U0001f195 New Confirmed Setups\n\n"
+            f"## {_NEW} New Confirmed Setups\n\n"
             "_No new confirmed setups today._\n\n"
             "> **Why no setups?** A confirmed setup requires **all five** conditions to be met "
             "on the same bar: (1) daily structure HH+HL or LH+LL, (2) price retest of a "
@@ -243,39 +266,41 @@ def _build_body(
         )
 
     # ── Resolved / open updates ───────────────────────────────────────────────
+    open_setup_note = (
+        f"> Each day a **new issue** is created. Open setups from previous days are "
+        "tracked in the database and checked against today's high/low/close. "
+        "If stop, target or zone invalidation is triggered, the signal is marked resolved "
+        "and appears in this table. Issues older than 7 days are archived automatically.\n\n"
+    )
     if resolved_signals:
         rows  = "| Symbol | Side | Rec. On | Resolved On | Status | Reason |\n"
         rows += "|---|---|---|---|---|---|\n"
         for s in resolved_signals:
-            status_emoji = (
-                "\u2705 Target Hit" if s.get("status") == "target_hit" else
-                "\u274c Stop Hit"   if s.get("status") == "stop_hit"   else
-                "\u26aa Invalidated"
-            )
+            if s.get("status") == "target_hit":
+                status_emoji = f"{_TICK} Target Hit"
+            elif s.get("status") == "stop_hit":
+                status_emoji = f"{_CROSS} Stop Hit"
+            else:
+                status_emoji = f"{_CIRCLE} Invalidated"
+            resolved_val = s.get("resolved_at", _DASH)
             rows += (
-                f"| **{s['symbol'].replace('.NS','')}** "
+                f"| **{s['symbol'].replace('.NS', '')}** "
                 f"| {s['side'].upper()} "
                 f"| {s['scan_date']} "
-                f"| {s.get('resolved_at', '\u2014')} "
+                f"| {resolved_val} "
                 f"| {status_emoji} "
                 f"| {s.get('resolution_reason', '')} |\n"
             )
         resolved_section = (
-            "## \U0001f4cb Updates on Open Setups\n\n"
-            "> Each day a **new issue** is created. Open setups from previous days are "
-            "tracked in the database and checked against today's high/low/close. "
-            "If stop, target or zone invalidation is triggered, the signal is marked resolved "
-            "and appears in this table. Issues older than 7 days are archived automatically.\n\n"
+            f"## {_CLIP} Updates on Open Setups\n\n"
+            + open_setup_note
             + rows + "\n"
         )
     else:
         resolved_section = (
-            "## \U0001f4cb Updates on Open Setups\n\n"
-            "> Each day a **new issue** is created. Open setups from previous days are "
-            "tracked in the database and checked against today's high/low/close. "
-            "If stop, target or zone invalidation is triggered, the signal is marked resolved "
-            "and appears in this table. Issues older than 7 days are archived automatically.\n\n"
-            "_No open setups were resolved today._\n\n"
+            f"## {_CLIP} Updates on Open Setups\n\n"
+            + open_setup_note
+            + "_No open setups were resolved today._\n\n"
         )
 
     # ── Structure narrative ───────────────────────────────────────────────────
@@ -283,7 +308,7 @@ def _build_body(
     bearish = [s for s in structure_data if s["daily_structure"] == "bearish"][:MAX_PER_SIDE]
 
     struct_section = (
-        "## \U0001f4ca Market Structure Review \u2014 Watchlist Builder\n\n"
+        f"## {_CHART} Market Structure Review {_DASH} Watchlist Builder\n\n"
         "> **How to use this section:** These stocks are in a confirmed daily swing structure "
         "(HH+HL = bullish, LH+LL = bearish) but have **not yet met all five signal conditions**. "
         "Use them as a **watchlist for the next 1\u20133 sessions**. "
@@ -291,27 +316,27 @@ def _build_body(
         "with RSI turning in the trend direction and volume \u2265 1.3\u00d7 average \u2014 "
         "that is your manual entry trigger. "
         "Entry / Stop / Target levels are projections based on the nearest zone + ATR buffer; "
-        "always verify on your chart before acting. "
+        f"always verify on your chart before acting. "
         f"Showing up to {MAX_PER_SIDE} stocks per side, sorted by structure quality.\n\n"
     )
 
     if bullish:
-        struct_section += f"### \u25b2 Bullish \u2014 HH + HL ({len(bullish)} stocks)\n\n"
+        struct_section += f"### {_BULL} Bullish {_DASH} HH + HL ({len(bullish)} stocks)\n\n"
         struct_section += "".join(_swing_paragraph(s) for s in bullish)
     if bearish:
-        struct_section += f"### \u25bc Bearish \u2014 LH + LL ({len(bearish)} stocks)\n\n"
+        struct_section += f"### {_BEAR} Bearish {_DASH} LH + LL ({len(bearish)} stocks)\n\n"
         struct_section += "".join(_swing_paragraph(s) for s in bearish)
     if not bullish and not bearish:
         struct_section += "_No clear structure identified today._\n"
 
     footer = (
         "---\n"
-        "_Automated scan \u2014 Nifty 500. Not financial advice. "
+        f"_Automated scan {_DASH} Nifty 500. Not financial advice. "
         "Verify on charts before trading._"
     )
 
     return (
-        f"# NSE Supply/Demand Scanner \u2014 {scan_date}\n\n"
+        f"# NSE Supply/Demand Scanner {_DASH} {scan_date}\n\n"
         + new_section
         + resolved_section
         + struct_section
