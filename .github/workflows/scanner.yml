@@ -29,6 +29,27 @@ jobs:
       - name: Show installed package versions
         run: pip show yfinance pandas numpy psycopg2-binary | grep -E 'Name|Version'
 
+      - name: Syntax check all Python files
+        run: python -m py_compile config.py data_loader.py indicators.py zones.py strategy.py lifecycle.py repository.py notifier.py universe.py main.py db_check.py && echo "All files OK"
+
+      - name: Test imports (dry run)
+        run: |
+          python - <<'EOF'
+          import sys
+          print(f"Python {sys.version}")
+          print("Testing imports...")
+          try:
+              import pandas; print(f"  pandas {pandas.__version__} OK")
+              import numpy; print(f"  numpy {numpy.__version__} OK")
+              import yfinance; print(f"  yfinance {yfinance.__version__} OK")
+              import psycopg2; print(f"  psycopg2 {psycopg2.__version__} OK")
+              from dotenv import load_dotenv; print(f"  python-dotenv OK")
+          except Exception as e:
+              print(f"  IMPORT FAILED: {e}")
+              sys.exit(1)
+          print("All library imports OK")
+          EOF
+
       - name: Validate secrets
         run: |
           missing=""
