@@ -116,6 +116,21 @@ def send_daily_report(
         log.error("Failed to create GitHub issue")
 
 
+def _rsi_badge(rsi: float, side: str) -> str:
+    """Coloured text label for RSI value."""
+    if side == "long":
+        tag = "🟢" if rsi >= 60 else "🟡" if rsi >= 50 else "🔴"
+    else:
+        tag = "🔴" if rsi <= 40 else "🟡" if rsi <= 50 else "🟢"
+    return f"{tag} {rsi:.1f}"
+
+
+def _vol_badge(ratio: float) -> str:
+    """Volume ratio with emoji tier."""
+    tag = "🔥" if ratio >= 2.0 else "⬆️" if ratio >= 1.5 else "✅"
+    return f"{tag} {ratio:.2f}x"
+
+
 def _swing_paragraph(s: dict) -> str:
     sym    = s["symbol"].replace(".NS", "")
     cmp    = s["current_price"]
@@ -128,22 +143,13 @@ def _swing_paragraph(s: dict) -> str:
     rr     = s.get("rr")
     weekly = s["weekly_structure"]
 
-    # Trade levels line
-    if entry and stop and target:
-        levels_line = (
-            f"- **Entry:** {entry} &nbsp;|&nbsp; "
-            f"**Stop:** {stop} &nbsp;|&nbsp; "
-            f"**Target:** {target} &nbsp;|&nbsp; "
-            f"**R:R** {rr}R\n"
-        )
-    else:
-        levels_line = "- _No zone close enough to price for level calculation_\n"
-
-    # Zone line
-    zone_line = (
-        f"- Zone: **{zl} – {zh}**\n" if zl
-        else "- Zone: _none identified_\n"
+    levels_line = (
+        f"- **Entry:** {entry} &nbsp;|&nbsp; **Stop:** {stop} "
+        f"&nbsp;|&nbsp; **Target:** {target} &nbsp;|&nbsp; **R:R** {rr}R\n"
+        if entry and stop and target
+        else "- _No zone close enough to price for level calculation_\n"
     )
+    zone_line = f"- Zone: **{zl} – {zh}**\n" if zl else "- Zone: _none identified_\n"
 
     if s["daily_structure"] == "bullish":
         hh = " → ".join(f"**{p}** ({d})" for d, p in highs)
@@ -154,11 +160,9 @@ def _swing_paragraph(s: dict) -> str:
             "Weekly bearish — counter-trend caution 🔴"
         )
         return (
-            f"**{sym}** &nbsp;`CMP {cmp}` &nbsp;`BULLISH`\n"
-            f"- HH: {hh}\n"
-            f"- HL: {hl}\n"
-            + zone_line
-            + levels_line
+            f"**{sym}** &nbsp;`CMP: {cmp}` &nbsp;`BULLISH`\n"
+            f"- HH: {hh}\n- HL: {hl}\n"
+            + zone_line + levels_line
             + f"- {weekly_note}\n\n"
         )
     else:
@@ -170,11 +174,9 @@ def _swing_paragraph(s: dict) -> str:
             "Weekly bullish — counter-trend caution 🟢"
         )
         return (
-            f"**{sym}** &nbsp;`CMP {cmp}` &nbsp;`BEARISH`\n"
-            f"- LH: {lh}\n"
-            f"- LL: {ll}\n"
-            + zone_line
-            + levels_line
+            f"**{sym}** &nbsp;`CMP: {cmp}` &nbsp;`BEARISH`\n"
+            f"- LH: {lh}\n- LL: {ll}\n"
+            + zone_line + levels_line
             + f"- {weekly_note}\n\n"
         )
 
@@ -188,25 +190,30 @@ def _build_body(
 
     # -- New signals ----------------------------------------------------------
     if new_signals:
-        rows = "| Symbol | Side | Confirm Date | Entry | Stop | Target | R:R | Zone | Retest# | Score |\n"
-        rows += "|---|---|---|---|---|---|---|---|---|---|\n"
+        rows  = "| Symbol | Side | CMP | Confirm Date | Entry | Stop | Target | R:R | RSI | Vol | Zone | Retest# | Score |\n"
+        rows += "|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
         for s in new_signals:
             rr = ""
             if s.get("target_price") and s.get("stop_loss") and s.get("entry_price"):
-                risk   = abs(s["entry_price"] - s["stop_loss"])
-                reward = abs(s["target_price"] - s["entry_price"])
+                risk   = abs(float(s["entry_price"]) - float(s["stop_loss"]))
+                reward = abs(float(s["target_price"]) - float(s["entry_price"]))
                 rr     = f"{reward/risk:.1f}R" if risk > 0 else "-"
+            rsi_disp = _rsi_badge(float(s.get("rsi_at_confirm") or 0), s["side"])
+            vol_disp = _vol_badge(float(s.get("volume_ratio") or 0))
             rows += (
                 f"| **{s['symbol'].replace('.NS','')}** "
                 f"| {'🟢 LONG' if s['side']=='long' else '🔴 SHORT'} "
+                f"| **{s.get('cmp', '—')}** "
                 f"| {s.get('confirmation_date', s['scan_date'])} "
-                f"| **{s['entry_price']}** "
+                f"| {s['entry_price']} "
                 f"| {s['stop_loss']} "
-                f"| {s.get('target_price','—')} "
+                f"| {s.get('target_price', '—')} "
                 f"| {rr} "
+                f"| {rsi_disp} "
+                f"| {vol_disp} "
                 f"| {s['zone_low']} – {s['zone_high']} "
-                f"| {s.get('retest_number',1)} "
-                f"| {s.get('quality_score','')} |\n"
+                f"| {s.get('retest_number', 1)} "
+                f"| {s.get('quality_score', '')} |\n"
             )
         new_section = f"## 🆕 New Confirmed Setups\n\n{rows}\n"
     else:
@@ -214,7 +221,7 @@ def _build_body(
 
     # -- Resolved -------------------------------------------------------------
     if resolved_signals:
-        rows = "| Symbol | Side | Rec. On | Resolved On | Status | Reason |\n"
+        rows  = "| Symbol | Side | Rec. On | Resolved On | Status | Reason |\n"
         rows += "|---|---|---|---|---|---|\n"
         for s in resolved_signals:
             status_emoji = (
@@ -226,9 +233,9 @@ def _build_body(
                 f"| **{s['symbol'].replace('.NS','')}** "
                 f"| {s['side'].upper()} "
                 f"| {s['scan_date']} "
-                f"| {s.get('resolved_at','—')} "
+                f"| {s.get('resolved_at', '—')} "
                 f"| {status_emoji} "
-                f"| {s.get('resolution_reason','')} |\n"
+                f"| {s.get('resolution_reason', '')} |\n"
             )
         resolved_section = f"## 📋 Updates on Open Setups\n\n{rows}\n"
     else:
@@ -238,21 +245,19 @@ def _build_body(
     bullish = [s for s in structure_data if s["daily_structure"] == "bullish"][:MAX_PER_SIDE]
     bearish = [s for s in structure_data if s["daily_structure"] == "bearish"][:MAX_PER_SIDE]
 
-    struct_section = "## 📊 Market Structure Review — for backtesting\n\n"
+    struct_section  = "## 📊 Market Structure Review — for backtesting\n\n"
     struct_section += (
         f"> Up to {MAX_PER_SIDE} stocks per side. "
-        "**Entry** = projected zone entry | **Stop** = below/above zone + ATR buffer | "
+        "**Entry** = projected zone entry | **Stop** = zone edge + ATR buffer | "
         "**Target** = nearest opposite zone or 2R. Verify on charts before acting.\n\n"
     )
 
     if bullish:
         struct_section += f"### ▲ Bullish — HH + HL ({len(bullish)} stocks)\n\n"
         struct_section += "".join(_swing_paragraph(s) for s in bullish)
-
     if bearish:
         struct_section += f"### ▼ Bearish — LH + LL ({len(bearish)} stocks)\n\n"
         struct_section += "".join(_swing_paragraph(s) for s in bearish)
-
     if not bullish and not bearish:
         struct_section += "_No clear structure identified today._\n"
 

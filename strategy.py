@@ -1,4 +1,4 @@
-"""Core strategy: supply/demand zone scanner with ATR impulse filter.
+"""Core strategy: supply/demand zone scanner with ATR impulse + RSI + Volume filters.
 
 Key rules:
 - Weekly trend sets the bias (bullish/bearish/neutral)
@@ -7,47 +7,54 @@ Key rules:
 - Zone: body of first impulse bar
 - Retest: ANY touch of zone after impulse (2nd, 3rd visits all valid)
 - Confirmation: candle after retest closes beyond prior bar's high/low
+- RSI filter (hard): long RSI >= 50 and rising; short RSI <= 50 and falling
+- Volume filter (hard): confirm bar volume >= VOL_RATIO_MIN x 20-day average
 - Signal window: confirmation within last CONFIRMATION_WINDOW bars (default 3)
 - Zone invalidation: body close THROUGH the zone
 - scan_date: always the date the scanner RAN (passed in as run_date)
 """
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import List, Optional
 import pandas as pd
 
 from config import STOP_ATR_BUFFER
-from indicators import compute_atr, detect_structure
+from indicators import compute_atr, compute_rsi, compute_volume_ratio, detect_structure
 from zones import find_zones, find_nearest_opposite_zone
 
 log = logging.getLogger(__name__)
 
 CONFIRMATION_WINDOW = 3
-MAX_RETESTS = 5
+MAX_RETESTS         = 5
+RSI_LONG_MIN        = 50.0   # RSI must be >= this for longs
+RSI_SHORT_MAX       = 50.0   # RSI must be <= this for shorts
+VOL_RATIO_MIN       = 1.3    # confirm bar volume must be >= 1.3x 20-day avg
 
 
 @dataclass
 class Signal:
-    symbol: str
-    side: str
-    scan_date: str          # date the scanner ran (today)
-    confirmation_date: str  # date of the confirmation candle on the chart
-    entry_price: float
-    stop_loss: float
-    target_price: Optional[float]
-    zone_low: float
-    zone_high: float
-    weekly_structure: str
-    daily_structure: str
-    atr_before: float
-    atr_end: float
-    atr_expansion: float
-    confirmation_close: float
+    symbol:                 str
+    side:                   str
+    scan_date:              str
+    confirmation_date:      str
+    entry_price:            float
+    stop_loss:              float
+    target_price:           Optional[float]
+    zone_low:               float
+    zone_high:              float
+    weekly_structure:       str
+    daily_structure:        str
+    atr_before:             float
+    atr_end:                float
+    atr_expansion:          float
+    confirmation_close:     float
     confirmation_prev_high: float
-    quality_score: float
+    quality_score:          float
+    rsi_at_confirm:         float   # RSI value on the confirmation bar
+    volume_ratio:           float   # confirm bar vol / 20-day avg vol
     bars_since_confirmation: int = 0
-    retest_number: int = 1
+    retest_number:          int = 1
 
 
 def scan_symbol(
@@ -61,9 +68,13 @@ def scan_symbol(
         from datetime import date as _date
         run_date = _date.today()
 
-    signals: List[Signal] = []
+    signals:          List[Signal] = []
     weekly_structure = detect_structure(weekly)
     daily_structure  = detect_structure(daily)
+
+    # Pre-compute RSI and Volume ratio for the full daily series
+    rsi_series = compute_rsi(daily)
+    vol_series = compute_volume_ratio(daily)
 
     for side in ["long", "short"]:
         required = "bullish" if side == "long" else "bearish"
@@ -82,10 +93,10 @@ def scan_symbol(
             if post_impulse.empty:
                 continue
 
-            atr = compute_atr(daily)
-            search_from = 0
-            retest_count = 0
-            zone_valid = True
+            atr            = compute_atr(daily)
+            search_from    = 0
+            retest_count   = 0
+            zone_valid     = True
 
             while retest_count < MAX_RETESTS and zone_valid:
                 slice_df = post_impulse.iloc[search_from:]
@@ -96,8 +107,8 @@ def scan_symbol(
                 if retest_local is None:
                     break
 
-                retest_count += 1
-                retest_bar = slice_df.iloc[retest_local]
+                retest_count  += 1
+                retest_bar     = slice_df.iloc[retest_local]
                 abs_retest_idx = search_from + retest_local
 
                 # Zone invalidation
@@ -115,6 +126,7 @@ def scan_symbol(
                 confirm_bar = post_impulse.iloc[abs_retest_idx + 1]
                 prev_bar    = retest_bar
 
+                # ── Candle confirmation ───────────────────────────────────────
                 if side == "long":
                     confirmed = (
                         confirm_bar["Close"] > confirm_bar["Open"] and
@@ -137,7 +149,33 @@ def scan_symbol(
                     search_from = abs_retest_idx + 1
                     continue
 
-                # Valid fresh signal
+                # ── RSI hard filter ───────────────────────────────────────────
+                confirm_date  = confirm_bar.name
+                rsi_val       = float(rsi_series.loc[confirm_date]) if confirm_date in rsi_series.index else 50.0
+                rsi_prev      = float(rsi_series.iloc[rsi_series.index.get_loc(confirm_date) - 1]) \
+                                if rsi_series.index.get_loc(confirm_date) > 0 else rsi_val
+
+                if side == "long":
+                    rsi_ok = rsi_val >= RSI_LONG_MIN and rsi_val > rsi_prev   # >= 50 AND rising
+                else:
+                    rsi_ok = rsi_val <= RSI_SHORT_MAX and rsi_val < rsi_prev  # <= 50 AND falling
+
+                if not rsi_ok:
+                    log.debug("%s [%s] retest#%d: RSI filter failed (rsi=%.1f prev=%.1f)",
+                              symbol, side, retest_count, rsi_val, rsi_prev)
+                    search_from = abs_retest_idx + 1
+                    continue
+
+                # ── Volume hard filter ────────────────────────────────────────
+                vol_ratio = float(vol_series.loc[confirm_date]) if confirm_date in vol_series.index else 1.0
+
+                if vol_ratio < VOL_RATIO_MIN:
+                    log.debug("%s [%s] retest#%d: Volume filter failed (ratio=%.2f)",
+                              symbol, side, retest_count, vol_ratio)
+                    search_from = abs_retest_idx + 1
+                    continue
+
+                # ── Build signal ──────────────────────────────────────────────
                 atr_idx     = min(zone.impulse_end_idx + confirm_abs + 1, len(atr) - 1)
                 current_atr = float(atr.iloc[atr_idx])
                 entry       = float(confirm_bar["Close"])
@@ -160,16 +198,17 @@ def scan_symbol(
 
                 log.info(
                     "%s [%s] retest#%d: SIGNAL | entry=%.2f stop=%.2f target=%.2f "
-                    "confirmed %d bar(s) ago | zone=%.2f-%.2f",
+                    "rsi=%.1f vol_ratio=%.2f bars_since=%d | zone=%.2f-%.2f",
                     symbol, side, retest_count,
-                    entry, stop, target or 0, bars_since,
+                    entry, stop, target or 0,
+                    rsi_val, vol_ratio, bars_since,
                     zone.zone_low, zone.zone_high,
                 )
 
                 signals.append(Signal(
                     symbol=symbol,
                     side=side,
-                    scan_date=str(run_date),          # RUN date, not bar date
+                    scan_date=str(run_date),
                     confirmation_date=str(confirm_bar.name.date()),
                     entry_price=round(entry, 2),
                     stop_loss=round(stop, 2),
@@ -184,6 +223,8 @@ def scan_symbol(
                     confirmation_close=round(float(confirm_bar["Close"]), 2),
                     confirmation_prev_high=round(float(prev_bar["High"]), 2),
                     quality_score=quality,
+                    rsi_at_confirm=round(rsi_val, 1),
+                    volume_ratio=round(vol_ratio, 2),
                     bars_since_confirmation=bars_since,
                     retest_number=retest_count,
                 ))

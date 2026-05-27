@@ -24,30 +24,32 @@ def _f(v) -> Optional[float]:
 
 CREATE_TABLES_SQL = """
 CREATE TABLE IF NOT EXISTS signals (
-    signal_id       SERIAL PRIMARY KEY,
-    symbol          TEXT NOT NULL,
-    side            TEXT NOT NULL,
-    scan_date       DATE NOT NULL,
-    confirmation_date DATE NOT NULL,
-    entry_price     NUMERIC NOT NULL,
-    stop_loss       NUMERIC NOT NULL,
-    target_price    NUMERIC,
-    zone_low        NUMERIC NOT NULL,
-    zone_high       NUMERIC NOT NULL,
-    weekly_structure TEXT,
-    daily_structure  TEXT,
-    atr_before      NUMERIC,
-    atr_end         NUMERIC,
-    atr_expansion   NUMERIC,
-    confirmation_close NUMERIC,
-    confirmation_prev_high NUMERIC,
-    quality_score   NUMERIC,
+    signal_id               SERIAL PRIMARY KEY,
+    symbol                  TEXT NOT NULL,
+    side                    TEXT NOT NULL,
+    scan_date               DATE NOT NULL,
+    confirmation_date       DATE NOT NULL,
+    entry_price             NUMERIC NOT NULL,
+    stop_loss               NUMERIC NOT NULL,
+    target_price            NUMERIC,
+    zone_low                NUMERIC NOT NULL,
+    zone_high               NUMERIC NOT NULL,
+    weekly_structure        TEXT,
+    daily_structure         TEXT,
+    atr_before              NUMERIC,
+    atr_end                 NUMERIC,
+    atr_expansion           NUMERIC,
+    confirmation_close      NUMERIC,
+    confirmation_prev_high  NUMERIC,
+    quality_score           NUMERIC,
+    rsi_at_confirm          NUMERIC,
+    volume_ratio            NUMERIC,
     bars_since_confirmation INT DEFAULT 0,
-    retest_number   INT DEFAULT 1,
-    status          TEXT NOT NULL DEFAULT 'open',
-    resolved_at     DATE,
-    resolution_reason TEXT,
-    created_at      TIMESTAMPTZ DEFAULT NOW()
+    retest_number           INT DEFAULT 1,
+    status                  TEXT NOT NULL DEFAULT 'open',
+    resolved_at             DATE,
+    resolution_reason       TEXT,
+    created_at              TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS signal_events (
@@ -68,10 +70,12 @@ def init_schema():
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute(CREATE_TABLES_SQL)
-            # Add new columns if upgrading from older schema
+            # Idempotent column additions for schema upgrades
             for col, defn in [
                 ("bars_since_confirmation", "INT DEFAULT 0"),
-                ("retest_number", "INT DEFAULT 1"),
+                ("retest_number",           "INT DEFAULT 1"),
+                ("rsi_at_confirm",          "NUMERIC"),
+                ("volume_ratio",            "NUMERIC"),
             ]:
                 cur.execute(f"""
                     DO $$ BEGIN
@@ -92,6 +96,7 @@ def insert_signal(sig) -> int:
              target_price, zone_low, zone_high, weekly_structure, daily_structure,
              atr_before, atr_end, atr_expansion, confirmation_close,
              confirmation_prev_high, quality_score,
+             rsi_at_confirm, volume_ratio,
              bars_since_confirmation, retest_number)
         VALUES
             (%(symbol)s, %(side)s, %(scan_date)s, %(confirmation_date)s,
@@ -99,6 +104,7 @@ def insert_signal(sig) -> int:
              %(zone_high)s, %(weekly_structure)s, %(daily_structure)s,
              %(atr_before)s, %(atr_end)s, %(atr_expansion)s,
              %(confirmation_close)s, %(confirmation_prev_high)s, %(quality_score)s,
+             %(rsi_at_confirm)s, %(volume_ratio)s,
              %(bars_since_confirmation)s, %(retest_number)s)
         RETURNING signal_id
     """
@@ -120,6 +126,8 @@ def insert_signal(sig) -> int:
         confirmation_close=_f(sig.confirmation_close),
         confirmation_prev_high=_f(sig.confirmation_prev_high),
         quality_score=_f(sig.quality_score),
+        rsi_at_confirm=_f(sig.rsi_at_confirm),
+        volume_ratio=_f(sig.volume_ratio),
         bars_since_confirmation=int(sig.bars_since_confirmation),
         retest_number=int(sig.retest_number),
     )
