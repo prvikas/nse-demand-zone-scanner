@@ -13,6 +13,10 @@ if not DATABASE_URL:
 LOOKBACK_DAYS = int(os.environ.get("LOOKBACK_DAYS", "365"))
 MAX_WORKERS   = int(os.environ.get("MAX_WORKERS",   "10"))
 
+# ── Zone detection ───────────────────────────────────────────────────────────
+IMPULSE_MIN_BARS     = int(os.environ.get("IMPULSE_MIN_BARS",     "3"))
+ATR_EXPANSION_FACTOR = float(os.environ.get("ATR_EXPANSION_FACTOR", "1.2"))
+
 # ── Strategy parameters ──────────────────────────────────────────────────────
 ATR_PERIOD            = int(os.environ.get("ATR_PERIOD",            "14"))
 PIVOT_DEPTH           = int(os.environ.get("PIVOT_DEPTH",           "5"))
