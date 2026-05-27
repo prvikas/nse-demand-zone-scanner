@@ -8,6 +8,10 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+permissions:
+  issues: write
+  contents: read
+
 jobs:
   scan:
     runs-on: ubuntu-latest
@@ -53,20 +57,14 @@ jobs:
       - name: Validate secrets
         run: |
           missing=""
-          [ -z "$DATABASE_URL" ]       && missing="$missing DATABASE_URL"
-          [ -z "$EMAIL_USER" ]         && missing="$missing EMAIL_USER"
-          [ -z "$EMAIL_APP_PASSWORD" ] && missing="$missing EMAIL_APP_PASSWORD"
-          [ -z "$EMAIL_TO" ]           && missing="$missing EMAIL_TO"
+          [ -z "$DATABASE_URL" ] && missing="$missing DATABASE_URL"
           if [ -n "$missing" ]; then
             echo "::error::Missing required secrets:$missing"
             exit 1
           fi
           echo "All required secrets present."
         env:
-          DATABASE_URL:       ${{ secrets.DATABASE_URL }}
-          EMAIL_USER:         ${{ secrets.EMAIL_USER }}
-          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
-          EMAIL_TO:           ${{ secrets.EMAIL_TO }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
       - name: Check DB and init schema
         run: python db_check.py
@@ -76,10 +74,9 @@ jobs:
       - name: Run scanner
         run: python main.py
         env:
-          DATABASE_URL:       ${{ secrets.DATABASE_URL }}
-          EMAIL_USER:         ${{ secrets.EMAIL_USER }}
-          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
-          EMAIL_TO:           ${{ secrets.EMAIL_TO }}
+          DATABASE_URL:        ${{ secrets.DATABASE_URL }}
+          GITHUB_TOKEN:        ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY:   ${{ github.repository }}
 
       - name: Upload run log
         if: always()
