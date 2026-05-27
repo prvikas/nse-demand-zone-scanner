@@ -1,39 +1,39 @@
-"""Central configuration — all parameters are read from environment variables.
+"""Central configuration - all parameters are read from environment variables.
 Store secrets in GitHub Actions secrets or a local .env file (never commit .env).
 """
 import os
-import sys
 from dotenv import load_dotenv
 
 load_dotenv()
 
 
 def _require(name: str) -> str:
-    """Return env var or exit with a clear message (never raise a cryptic KeyError)."""
-    value = os.environ.get(name)
+    """Return env var value or raise RuntimeError (never sys.exit - let caller handle it)."""
+    value = os.environ.get(name, "").strip()
     if not value:
-        print(f"\n[CONFIG ERROR] Required environment variable '{name}' is not set.", file=sys.stderr)
-        print("  → For local use: create a .env file with this variable.", file=sys.stderr)
-        print("  → For GitHub Actions: add it under Settings → Secrets and variables → Actions.", file=sys.stderr)
-        sys.exit(1)
+        raise RuntimeError(
+            f"Required environment variable '{name}' is not set.\n"
+            f"  For GitHub Actions: Settings -> Secrets and variables -> Actions -> New secret\n"
+            f"  For local use: add '{name}=...' to your .env file"
+        )
     return value
 
 
-# ── Database ──────────────────────────────────────────────────────────────────
-DATABASE_URL: str = _require("DATABASE_URL")          # postgres://user:pass@host/db?sslmode=require
+# -- Database ----------------------------------------------------------------
+DATABASE_URL: str = _require("DATABASE_URL")
 
-# ── Email ──────────────────────────────────────────────────────────────────────
+# -- Email -------------------------------------------------------------------
 EMAIL_SMTP_HOST: str = os.getenv("EMAIL_SMTP_HOST", "smtp.gmail.com")
 EMAIL_SMTP_PORT: int = int(os.getenv("EMAIL_SMTP_PORT", "587"))
-EMAIL_USER: str = _require("EMAIL_USER")              # sender gmail address
-EMAIL_APP_PASSWORD: str = _require("EMAIL_APP_PASSWORD")  # Gmail App Password
-EMAIL_TO: str = _require("EMAIL_TO")                  # recipient address
+EMAIL_USER: str = _require("EMAIL_USER")
+EMAIL_APP_PASSWORD: str = _require("EMAIL_APP_PASSWORD")
+EMAIL_TO: str = _require("EMAIL_TO")
 
-# ── Universe ────────────────────────────────────────────────────────────────────
+# -- Universe ----------------------------------------------------------------
 INDEX_TICKER: str = os.getenv("INDEX_TICKER", "^CNX500")
 NSE_SUFFIX: str = ".NS"
 
-# ── Strategy parameters (all configurable) ────────────────────────────────────
+# -- Strategy parameters -----------------------------------------------------
 PIVOT_DEPTH: int = int(os.getenv("PIVOT_DEPTH", "3"))
 STRUCTURE_SWING_COUNT: int = int(os.getenv("STRUCTURE_SWING_COUNT", "3"))
 IMPULSE_MIN_BARS: int = int(os.getenv("IMPULSE_MIN_BARS", "3"))
