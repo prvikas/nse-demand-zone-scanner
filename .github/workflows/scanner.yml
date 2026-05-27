@@ -2,9 +2,8 @@ name: NSE Daily Scanner
 
 on:
   schedule:
-    # Runs at 04:00 UTC = 09:30 IST (after NSE previous day data is available)
-    - cron: '0 4 * * 1-5'   # Monday–Friday only
-  workflow_dispatch:          # Allow manual trigger from GitHub UI
+    - cron: '0 4 * * 1-5'
+  workflow_dispatch:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -27,7 +26,10 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Validate secrets are set
+      - name: Show installed package versions
+        run: pip show yfinance pandas numpy psycopg2-binary | grep -E 'Name|Version'
+
+      - name: Validate secrets
         run: |
           missing=""
           [ -z "$DATABASE_URL" ]       && missing="$missing DATABASE_URL"
@@ -36,29 +38,22 @@ jobs:
           [ -z "$EMAIL_TO" ]           && missing="$missing EMAIL_TO"
           if [ -n "$missing" ]; then
             echo "::error::Missing required secrets:$missing"
-            echo "Please add them under Settings → Secrets and variables → Actions"
             exit 1
           fi
-          echo "✅ All required secrets are present."
+          echo "All required secrets present."
         env:
           DATABASE_URL:       ${{ secrets.DATABASE_URL }}
           EMAIL_USER:         ${{ secrets.EMAIL_USER }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
           EMAIL_TO:           ${{ secrets.EMAIL_TO }}
 
-      - name: Check DB connection and init schema
-        run: |
-          set -euo pipefail
-          echo "--- Checking DB connection and initialising schema ---"
-          python db_check.py
+      - name: Check DB and init schema
+        run: python db_check.py
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
       - name: Run scanner
-        run: |
-          set -euo pipefail
-          python main.py 2>&1 | tee scanner.log
-          exit ${PIPESTATUS[0]}
+        run: python main.py
         env:
           DATABASE_URL:       ${{ secrets.DATABASE_URL }}
           EMAIL_USER:         ${{ secrets.EMAIL_USER }}
