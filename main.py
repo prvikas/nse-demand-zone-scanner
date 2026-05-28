@@ -20,10 +20,10 @@ log.info("scanner.log opened - logging initialised")
 
 
 def _get_swing_narrative(symbol, daily_df, weekly_df):
-    """Return swing structure + projected trade levels + RSI/Volume for the issue."""
+    """Return swing structure + projected trade levels + RSI/Volume/EMA for the issue."""
     from indicators import (
         find_pivot_highs, find_pivot_lows, detect_structure,
-        compute_atr, compute_rsi, compute_volume_ratio,
+        compute_atr, compute_rsi, compute_volume_ratio, compute_ema,
     )
     from zones import find_zones, find_nearest_opposite_zone
     from config import STRUCTURE_SWING_COUNT, STOP_ATR_BUFFER
@@ -53,6 +53,12 @@ def _get_swing_narrative(symbol, daily_df, weekly_df):
     vol_series       = compute_volume_ratio(daily_df)
     rsi_latest       = round(float(rsi_series.iloc[-1]), 1)
     vol_ratio_latest = round(float(vol_series.iloc[-1]), 2)
+
+    # EMA 21 and EMA 63 at the latest daily close
+    ema21_series = compute_ema(daily_df, 21)
+    ema63_series = compute_ema(daily_df, 63)
+    ema21_latest = round(float(ema21_series.iloc[-1]), 2)
+    ema63_latest = round(float(ema63_series.iloc[-1]), 2)
 
     side  = "long" if daily_structure == "bullish" else "short"
     zones = find_zones(daily_df, side)
@@ -104,6 +110,8 @@ def _get_swing_narrative(symbol, daily_df, weekly_df):
         rr=rr,
         rsi_latest=rsi_latest,
         vol_ratio_latest=vol_ratio_latest,
+        ema21=ema21_latest,
+        ema63=ema63_latest,
     )
 
 

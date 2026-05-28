@@ -1,4 +1,4 @@
-"""Technical indicator calculations: ATR, RSI, Volume, pivot detection, market structure."""
+"""Technical indicator calculations: ATR, RSI, Volume, EMA, pivot detection, market structure."""
 import numpy as np
 import pandas as pd
 
@@ -30,15 +30,18 @@ def compute_rsi(df: pd.DataFrame, period: int = RSI_PERIOD) -> pd.Series:
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
     rs  = avg_gain / avg_loss.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
-    return rsi.fillna(50)  # fill early NaN with neutral 50
+    return rsi.fillna(50)
 
 
 def compute_volume_ratio(df: pd.DataFrame, avg_bars: int = VOL_AVG_BARS) -> pd.Series:
-    """Volume of each bar divided by rolling avg_bars mean.
-    A ratio >= 1.3 means 30% above average — institutional participation.
-    """
+    """Volume of each bar divided by rolling avg_bars mean."""
     vol_avg = df["Volume"].rolling(avg_bars, min_periods=5).mean()
     return (df["Volume"] / vol_avg).fillna(1.0)
+
+
+def compute_ema(df: pd.DataFrame, period: int) -> pd.Series:
+    """Standard EMA of Close for the given period."""
+    return df["Close"].ewm(span=period, adjust=False).mean()
 
 
 def find_pivot_highs(df: pd.DataFrame, depth: int = PIVOT_DEPTH) -> pd.Series:

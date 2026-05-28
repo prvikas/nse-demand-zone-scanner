@@ -42,6 +42,8 @@ _DASH   = "\u2014"       # —
 _ARROW  = "\u2192"       # →
 _NBSP   = "\u00a0"       # non-breaking space
 _NNBSP  = "\u202f"       # narrow non-breaking space
+_TREND_UP   = "\u2197\ufe0f"  # ↗️ price above EMA
+_TREND_DOWN = "\u2198\ufe0f"  # ↘️ price below EMA
 
 
 def _gh_request(method: str, path: str, body: dict = None):
@@ -173,6 +175,16 @@ def _vol_badge(ratio: float) -> str:
     return f"{tag}{_NNBSP}{ratio:.2f}x"
 
 
+def _ema_line(cmp: float, ema21: float, ema63: float) -> str:
+    """Format EMA 21 and EMA 63 with directional arrows vs CMP."""
+    arrow21 = _TREND_UP if cmp >= ema21 else _TREND_DOWN
+    arrow63 = _TREND_UP if cmp >= ema63 else _TREND_DOWN
+    return (
+        f"- EMA21: {arrow21}{_NNBSP}**{ema21}** &nbsp;|&nbsp; "
+        f"EMA63: {arrow63}{_NNBSP}**{ema63}**\n"
+    )
+
+
 def _swing_paragraph(s: dict) -> str:
     """One stock block in the Market Structure Review section."""
     sym     = s["symbol"].replace(".NS", "")
@@ -187,12 +199,19 @@ def _swing_paragraph(s: dict) -> str:
     weekly  = s["weekly_structure"]
     rsi_val = s.get("rsi_latest")
     vol_val = s.get("vol_ratio_latest")
+    ema21   = s.get("ema21")
+    ema63   = s.get("ema63")
     dstruct = s["daily_structure"]
 
     rsi_line = (
         f"- RSI: {_rsi_badge(rsi_val, dstruct)} &nbsp;|&nbsp; "
         f"Vol ratio: {_vol_badge(vol_val)}\n"
         if rsi_val is not None and vol_val is not None
+        else ""
+    )
+    ema_line_str = (
+        _ema_line(cmp, ema21, ema63)
+        if ema21 is not None and ema63 is not None
         else ""
     )
     levels_line = (
@@ -215,7 +234,7 @@ def _swing_paragraph(s: dict) -> str:
         return (
             f"**{sym}** &nbsp;`CMP: {cmp}` &nbsp;`BULLISH`\n"
             f"- HH: {hh}\n- HL: {hl}\n"
-            + zone_line + rsi_line + levels_line
+            + zone_line + rsi_line + ema_line_str + levels_line
             + f"- {weekly_note}\n\n"
         )
     else:
@@ -230,7 +249,7 @@ def _swing_paragraph(s: dict) -> str:
         return (
             f"**{sym}** &nbsp;`CMP: {cmp}` &nbsp;`BEARISH`\n"
             f"- LH: {lh}\n- LL: {ll}\n"
-            + zone_line + rsi_line + levels_line
+            + zone_line + rsi_line + ema_line_str + levels_line
             + f"- {weekly_note}\n\n"
         )
 
