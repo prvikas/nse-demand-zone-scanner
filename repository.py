@@ -61,7 +61,9 @@ CREATE TABLE IF NOT EXISTS signal_events (
     new_status      TEXT,
     price_snapshot  NUMERIC,
     notes           TEXT,
-    created_at      TIMESTAMPTZ DEFAULT NOW()
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_signal_events_once_per_day
+        UNIQUE (signal_id, event_date, event_type)
 );
 """
 
@@ -70,6 +72,7 @@ def init_schema():
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute(CREATE_TABLES_SQL)
+
             # Idempotent column additions for schema upgrades
             for col, defn in [
                 ("bars_since_confirmation", "INT DEFAULT 0"),
@@ -83,6 +86,20 @@ def init_schema():
                     EXCEPTION WHEN duplicate_column THEN NULL;
                     END $$;
                 """)
+
+            # Idempotent unique constraint on signal_events (for existing DBs
+            # created before this constraint was added to CREATE_TABLES_SQL).
+            cur.execute("""
+                DO $$ BEGIN
+                    ALTER TABLE signal_events
+                        ADD CONSTRAINT uq_signal_events_once_per_day
+                        UNIQUE (signal_id, event_date, event_type);
+                EXCEPTION
+                    WHEN duplicate_table  THEN NULL;
+                    WHEN duplicate_object THEN NULL;
+                END $$;
+            """)
+
         conn.commit()
     log.info("Schema initialised")
 
@@ -156,12 +173,14 @@ def update_signal_status(signal_id: int, new_status: str, resolved_at: date, rea
 def insert_event(signal_id: int, event_date: date, event_type: str,
                  old_status: str, new_status: str,
                  price_snapshot: Optional[float] = None, notes: str = ""):
+    """Insert a signal event, silently ignoring duplicates (idempotent on rerun)."""
     sql = """
         INSERT INTO signal_events
             (signal_id, event_date, event_type, old_status, new_status, price_snapshot, notes)
         VALUES
             (%(signal_id)s, %(event_date)s, %(event_type)s, %(old_status)s,
              %(new_status)s, %(price_snapshot)s, %(notes)s)
+        ON CONFLICT (signal_id, event_date, event_type) DO NOTHING
     """
     with _conn() as conn:
         with conn.cursor() as cur:
