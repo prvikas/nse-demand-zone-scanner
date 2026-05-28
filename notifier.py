@@ -6,6 +6,7 @@ Strategy:
 - Uses GITHUB_TOKEN (zero extra secrets)
 - Open setup lifecycle is tracked in DB; each day's issue shows resolved/still-open
 - Idempotent: if an open issue for today already exists, update it instead of creating a new one
+- Title and body both show the IST timestamp of the most recent run
 """
 import logging
 import os
@@ -23,6 +24,8 @@ API_BASE     = "https://api.github.com"
 LABEL_NAME   = "nse-scanner-report"
 KEEP_DAYS    = 7
 MAX_PER_SIDE = 20
+
+_IST = timezone(timedelta(hours=5, minutes=30))
 
 # Pre-computed emoji constants (avoids backslash-in-f-string on Python < 3.12)
 _GREEN  = "\U0001f7e2"   # 🟢
@@ -44,6 +47,12 @@ _NBSP   = "\u00a0"       # non-breaking space
 _NNBSP  = "\u202f"       # narrow non-breaking space
 _TREND_UP   = "\u2197\ufe0f"  # ↗️ price above EMA
 _TREND_DOWN = "\u2198\ufe0f"  # ↘️ price below EMA
+_CLOCK  = "\U0001f551"   # 🕑
+
+
+def _now_ist() -> str:
+    """Return current time formatted as HH:MM IST."""
+    return datetime.now(_IST).strftime("%H:%M IST")
 
 
 def _gh_request(method: str, path: str, body: dict = None):
@@ -131,13 +140,19 @@ def send_daily_report(
         log.error("GITHUB_TOKEN or GITHUB_REPOSITORY not set")
         return
 
-    today_str = str(scan_date)
+    today_str  = str(scan_date)
+    updated_at = _now_ist()
     _ensure_label()
     _archive_old_issues()
     _close_previous_open_issues(today_str)
 
-    title = f"NSE Scanner {_DASH} {scan_date} | {len(new_signals)} new setup(s)"
-    body  = _build_body(new_signals, resolved_signals, scan_date, structure_data or [])
+    title = (
+        f"NSE Scanner {_DASH} {scan_date} "
+        f"| {len(new_signals)} new setup(s) "
+        f"| {_CLOCK} {updated_at}"
+    )
+    body  = _build_body(new_signals, resolved_signals, scan_date,
+                        structure_data or [], updated_at)
 
     # Idempotency: update today's issue if it already exists, else create
     existing = _find_todays_issue(today_str)
@@ -259,6 +274,7 @@ def _build_body(
     resolved_signals: List[dict],
     scan_date: date,
     structure_data: List[dict],
+    updated_at: str,
 ) -> str:
 
     # ── New signals ───────────────────────────────────────────────────────────
@@ -372,8 +388,9 @@ def _build_body(
 
     footer = (
         "---\n"
-        f"_Automated scan {_DASH} Nifty 500. Not financial advice. "
-        "Verify on charts before trading._"
+        f"{_CLOCK} _Last updated: **{updated_at}**_ "
+        f"{_DASH} Automated scan {_DASH} Nifty 500. Not financial advice. "
+        "Verify on charts before trading."
     )
 
     return (
