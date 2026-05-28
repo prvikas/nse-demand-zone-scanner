@@ -6,7 +6,7 @@ Strategy:
 - Uses GITHUB_TOKEN (zero extra secrets)
 - Open setup lifecycle is tracked in DB; each day's issue shows resolved/still-open
 - Idempotent: if an open issue for today already exists, update it instead of creating a new one
-- Title and body both show the IST timestamp of the most recent run
+- Title and body top both show the IST timestamp of the most recent run
 """
 import logging
 import os
@@ -388,13 +388,13 @@ def _build_body(
 
     footer = (
         "---\n"
-        f"{_CLOCK} _Last updated: **{updated_at}**_ "
-        f"{_DASH} Automated scan {_DASH} Nifty 500. Not financial advice. "
-        "Verify on charts before trading."
+        f"_Automated scan {_DASH} Nifty 500. Not financial advice. "
+        "Verify on charts before trading._"
     )
 
     return (
         f"# NSE Supply/Demand Scanner {_DASH} {scan_date}\n\n"
+        f"> {_CLOCK} _Last updated: **{updated_at}**_\n\n"
         + new_section
         + resolved_section
         + struct_section

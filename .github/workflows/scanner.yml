@@ -2,8 +2,7 @@ name: NSE Daily Scanner
 
 on:
   schedule:
-    - cron: "*/10 * * * *"   # every 10 minutes (for testing)
-    - cron: '0 22 * * 1-5' # 5:00 PM CDT Mon-Fri permanent (22:00 UTC)
+    - cron: '30 16 * * 1-5'  # 10:00 PM IST Mon-Fri (16:30 UTC) — after NSE market close
   workflow_dispatch:
 
 env:
