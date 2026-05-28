@@ -5,6 +5,7 @@ Strategy:
 - On each run: archive issues older than 7 days, close previous open, create today's
 - Uses GITHUB_TOKEN (zero extra secrets)
 - Open setup lifecycle is tracked in DB; each day's issue shows resolved/still-open
+- Idempotent: if an open issue for today already exists, update it instead of creating a new one
 """
 import logging
 import os
@@ -101,13 +102,21 @@ def _archive_old_issues():
             log.info("Archived issue #%d", n)
 
 
-def _close_previous_open_issues():
-    today_str = str(date.today())
+def _close_previous_open_issues(today_str: str):
+    """Close any open scanner issue that is NOT today's."""
     for issue in _get_scanner_issues():
         if issue["state"] == "open" and today_str not in issue["title"]:
             _gh_request("PATCH", f"/repos/{REPO}/issues/{issue['number']}",
                         {"state": "closed"})
             log.info("Closed previous issue #%d", issue["number"])
+
+
+def _find_todays_issue(today_str: str):
+    """Return the existing open issue for today, or None."""
+    for issue in _get_scanner_issues():
+        if issue["state"] == "open" and today_str in issue["title"]:
+            return issue
+    return None
 
 
 def send_daily_report(
@@ -120,20 +129,33 @@ def send_daily_report(
         log.error("GITHUB_TOKEN or GITHUB_REPOSITORY not set")
         return
 
+    today_str = str(scan_date)
     _ensure_label()
     _archive_old_issues()
-    _close_previous_open_issues()
+    _close_previous_open_issues(today_str)
 
     title = f"NSE Scanner {_DASH} {scan_date} | {len(new_signals)} new setup(s)"
     body  = _build_body(new_signals, resolved_signals, scan_date, structure_data or [])
 
-    issue = _gh_request("POST", f"/repos/{REPO}/issues", {
-        "title": title, "body": body, "labels": [LABEL_NAME],
-    })
-    if issue:
-        log.info("Issue created: #%d %s %s", issue["number"], _DASH, issue["html_url"])
+    # Idempotency: update today's issue if it already exists, else create
+    existing = _find_todays_issue(today_str)
+    if existing:
+        issue = _gh_request("PATCH", f"/repos/{REPO}/issues/{existing['number']}", {
+            "title": title, "body": body,
+        })
+        if issue:
+            log.info("Issue updated (idempotent re-run): #%d %s %s",
+                     issue["number"], _DASH, issue["html_url"])
+        else:
+            log.error("Failed to update existing GitHub issue")
     else:
-        log.error("Failed to create GitHub issue")
+        issue = _gh_request("POST", f"/repos/{REPO}/issues", {
+            "title": title, "body": body, "labels": [LABEL_NAME],
+        })
+        if issue:
+            log.info("Issue created: #%d %s %s", issue["number"], _DASH, issue["html_url"])
+        else:
+            log.error("Failed to create GitHub issue")
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

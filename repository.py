@@ -144,6 +144,7 @@ def update_signal_status(signal_id: int, new_status: str, resolved_at: date, rea
         UPDATE signals
         SET status = %(status)s, resolved_at = %(resolved_at)s, resolution_reason = %(reason)s
         WHERE signal_id = %(signal_id)s
+          AND status = 'open'
     """
     with _conn() as conn:
         with conn.cursor() as cur:
@@ -171,6 +172,25 @@ def insert_event(signal_id: int, event_date: date, event_type: str,
                 notes=notes,
             ))
         conn.commit()
+
+
+def event_exists_today(signal_id: int, event_date: date, event_type: str) -> bool:
+    """Return True if an event of this type already exists for this signal today."""
+    sql = """
+        SELECT 1 FROM signal_events
+        WHERE signal_id  = %(signal_id)s
+          AND event_date = %(event_date)s
+          AND event_type = %(event_type)s
+        LIMIT 1
+    """
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, dict(
+                signal_id=signal_id,
+                event_date=event_date,
+                event_type=event_type,
+            ))
+            return cur.fetchone() is not None
 
 
 # ── Reads ─────────────────────────────────────────────────────────────────────
