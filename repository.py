@@ -87,8 +87,18 @@ def init_schema():
                     END $$;
                 """)
 
-            # Idempotent unique constraint on signal_events (for existing DBs
-            # created before this constraint was added to CREATE_TABLES_SQL).
+            # Remove duplicate signal_events rows (keep lowest event_id per group)
+            # before attempting to add the unique constraint.
+            cur.execute("""
+                DELETE FROM signal_events
+                WHERE event_id NOT IN (
+                    SELECT MIN(event_id)
+                    FROM signal_events
+                    GROUP BY signal_id, event_date, event_type
+                );
+            """)
+
+            # Idempotent unique constraint on signal_events.
             cur.execute("""
                 DO $$ BEGIN
                     ALTER TABLE signal_events
